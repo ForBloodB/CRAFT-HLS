@@ -1,0 +1,10 @@
+{
+  "profile_name": "cloud_deepseek_v4_flash",
+  "provider_type": "cloud_openai",
+  "base_url": "https://api.deepseek.com",
+  "api_key_env": "DEEPSEEK_API_KEY",
+  "model": "deepseek-v4-flash",
+  "temperature": 0.2,
+  "max_tokens": 4096,
+  "timeout": 90.0
+}
