@@ -22,7 +22,7 @@ from .task_contracts import (
     summarize_resolution,
 )
 
-TITLE = "CCD-HLS Agent TUI"
+TITLE = "CRAFT-HLS Agent TUI"
 CALL_RE = re.compile(r"llm_call_(\d+)_(.+)_(prompt|response)\.txt$")
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -1088,7 +1088,7 @@ def open_launch_tui(root: Path = Path("experiments")) -> tuple[str, Path | None]
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Textual agent TUI for CCD-HLS LOOP artifacts. "
+            "Textual agent TUI for CRAFT-HLS / CCD-HLS LOOP artifacts. "
             "Run HLS-agent without a subcommand to open the launcher."
         )
     )

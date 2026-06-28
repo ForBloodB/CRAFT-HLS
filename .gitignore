@@ -1,5 +1,7 @@
 .hls_agent/
 .env
+.venv/
+venv/
 configs/*.local.json
 configs/*_local.json
 __pycache__/

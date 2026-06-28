@@ -1,46 +1,118 @@
-# CCD-HLS Agent
+# CRAFT-HLS
 
-CCD-HLS Agent is an HLS-Eval / FPT 2026 research workspace. Roo Code is the
-front-end agent for natural-language requirements, Phase-0 diagnosis, contract
-review, and user approval. `HLS-agent` is the deterministic backend for
-HLS-Eval-style runs, Vitis/tool execution, repair loops, token accounting,
-budget ledgers, skill routing, and artifact replay.
-
-The current default workflow is:
+未来论文名建议：
 
 ```text
-natural-language request -> Roo diagnosis -> HLS-Eval-like contract
--> user review/lock -> CCD-HLS LOOP execution -> artifact-based report
+CRAFT-HLS: Contract-Refined Agentic Flow for Token-Efficient HLS Generation and Repair
 ```
 
-## Install
+中文可以写作：
+
+```text
+CRAFT-HLS：面向 HLS 生成与修复的合同精化、Token 高效智能体流程
+```
+
+这个名字把项目的三件核心事放在一起：先把自然语言需求精化成可审阅的 HLS-Eval 合同，再由 agent 执行生成、仿真、综合和修复，最后用 token report、budget ledger、skill router 和 artifacts 证明过程可复现、可比较、可写进论文。
+
+仓库里的命令名仍叫 `HLS-agent`，这是稳定 CLI 入口；`CRAFT-HLS` 是项目名、方法名和未来论文名。
+
+## 1. 项目做什么
+
+CRAFT-HLS 面向 FPT 2026 / HLS-Eval Track A，目标是构建一个可复现的 HLS agent 工作流：
+
+```text
+用户自然语言需求
+-> Roo Code 诊断
+-> HLS-Eval-like 合同
+-> 用户审阅并锁定合同
+-> CCD-HLS LOOP 后端执行
+-> 生成代码、CSIM、SYNTH、修复循环
+-> token / budget / skill / workflow artifacts
+-> 判断是否解决最初诊断的问题
+```
+
+当前核心能力：
+
+- Roo Code 作为主交互入口，负责需求诊断、合同补全、用户确认。
+- `HLS-agent` 作为确定性后端，负责运行 HLS-Eval case、调用模型、调用 HLS backend、保存 artifacts。
+- CCD-HLS v2 / LOOP 作为内部生成与修复方法，支持有界 repair loop。
+- M1-M3 已接入 stage-level token report、BudgetLedger、task mode、HLS skill router。
+- 默认目标平台按 KV260 组织合同字段；真实工具链仍由本机 Vitis/HLS-Eval 环境决定。
+
+## 2. 目录结构
+
+```text
+ccd_hls_agent/     核心 Python 包：CLI/TUI、contract、workflow、token、budget、skill、HLS backend
+scripts/           兼容入口、benchmark runner、cosim 验证脚本
+configs/           不含密钥的模型配置模板
+docs/              CCD-HLS v2/LOOP 机制、FPT 2026 规划文档
+tests/             单元测试与集成风格测试
+.roo/              Roo slash commands
+.roomodes          Roo custom mode
+references/        本地论文资料索引；PDF/HTML 默认不提交
+```
+
+本地运行产物不会提交：
+
+```text
+external/          HLS-Eval upstream checkout
+experiments/       benchmark 和真实 Vitis run 输出
+workspaces/        contract 工作区
+configs/*.local.json
+configs/*_local.json
+```
+
+## 3. 环境准备
+
+推荐 Python 版本：`>=3.13`。
 
 ```bash
-python3 -m pip install -e ".[dev,tui]"
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+python -m pip install -e ".[dev,tui]"
 ```
 
-Optional HLS-Eval dependency:
-
-```bash
-python3 -m pip install "git+https://github.com/sharc-lab/hls-eval.git"
-```
-
-`HLS-agent` should then be available on `PATH`:
+确认 CLI 可用：
 
 ```bash
 HLS-agent --help
 ```
 
-## Model Config
+如果要接入 HLS-Eval 数据集：
 
-This repo does not use `.env`. Put real API keys only in ignored local config
-files:
+```bash
+mkdir -p external
+git clone https://github.com/sharc-lab/hls-eval.git external/hls-eval
+python -m pip install -e external/hls-eval
+```
+
+如果要跑真实 Vitis backend，需要先加载 Vitis 环境，使下面命令可见：
+
+```bash
+which v++
+which vitis-run
+```
+
+例如你的机器可能需要：
+
+```bash
+source /tools/Xilinx/Vitis/2025.2/settings64.sh
+```
+
+实际路径以本机安装为准。
+
+## 4. 模型配置
+
+本项目不使用 `.env`。真实 key 只放在 ignored local config。
+
+DeepSeek 示例：
 
 ```bash
 cp configs/deepseek_v4_flash.json configs/deepseek_v4_flash.local.json
 ```
 
-Example local file:
+然后编辑 `configs/deepseek_v4_flash.local.json`：
 
 ```json
 {
@@ -56,25 +128,176 @@ Example local file:
 }
 ```
 
-Tracked config files must keep `api_key` and `api_key_env` as `null` unless
-they are harmless placeholders.
+本地 OpenAI-compatible 模型也可以使用同一结构，例如：
 
-## Roo Code Workflow
+```json
+{
+  "profile_name": "local_qwen3_coder",
+  "provider_type": "local_openai",
+  "base_url": "http://127.0.0.1:8000/v1",
+  "api_key": null,
+  "api_key_env": null,
+  "model": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+  "temperature": 0.2,
+  "max_tokens": 4096,
+  "timeout": 180.0
+}
+```
 
-Use Roo Code mode `hls-eval-agent`. The project mode and slash commands live in
-`.roomodes` and `.roo/commands/`.
+建议保存为 `configs/qwen3_coder_30b.local.json`，该文件会被 Git 忽略。
 
-Typical command sequence:
+检查配置：
+
+```bash
+HLS-agent doctor \
+  --model-config configs/deepseek_v4_flash.local.json \
+  --hls-eval-root external/hls-eval
+```
+
+## 5. 最小复现：不需要模型、不需要 Vitis
+
+这一步用于确认仓库、CLI、合同层和测试都正常。
+
+```bash
+pytest -q
+HLS-agent --help
+```
+
+准备一个 HLS-Eval-like 合同：
+
+```bash
+HLS-agent contract prepare \
+  --request "Implement an AES add_round_key kernel for KV260. Top function add_round_key. Signature: void add_round_key(unsigned char state[16], const unsigned char round_key[16]); Expected behavior: xor each state byte with the matching round key byte." \
+  --target-platform KV260 \
+  --out workspaces/contracts/add_round_key_demo
+```
+
+查看合同摘要和合同阶段 token 统计：
+
+```bash
+HLS-agent contract review workspaces/contracts/add_round_key_demo
+HLS-agent contract status workspaces/contracts/add_round_key_demo
+```
+
+这会生成：
+
+```text
+workspaces/contracts/add_round_key_demo/
+  kernel_description.md
+  top.txt
+  add_round_key.h
+  add_round_key.cpp
+  add_round_key_tb.cpp
+  hls_eval_config.toml
+  diagnosis.json
+  contract_meta.json
+  contract_stage_records.json
+  contract_token_report.json
+  workflow_status.json
+  workflow_events.jsonl
+```
+
+## 6. Agent 流程复现：需要模型，不需要 Vitis
+
+如果你只想验证 agent 运行闭环、artifact 格式、token/budget/skill 输出，可以使用 `mock` HLS backend。注意：`mock` 只 mock HLS 工具，不 mock LLM，所以仍需要模型配置。
+
+```bash
+HLS-agent run \
+  --case-path external/hls-eval/hls_eval_data/c2hlsc/add_round_key \
+  --hls-eval-root external/hls-eval \
+  --data-dir external/hls-eval/hls_eval_data \
+  --model-config configs/deepseek_v4_flash.local.json \
+  --hls-backend mock \
+  --max-llm-calls 1 \
+  --no-view \
+  --snapshot
+```
+
+输出会写入 `experiments/`。查看最近结果：
+
+```bash
+HLS-agent recent
+HLS-agent view <run_dir> --snapshot
+```
+
+## 7. 完整复现：真实 DeepSeek + Vitis
+
+完整复现需要：
+
+- `external/hls-eval` 已 clone。
+- Vitis 环境已加载，`v++` 和 `vitis-run` 可执行。
+- `configs/deepseek_v4_flash.local.json` 已写入真实 key。
+
+先跑一个小 case：
+
+```bash
+HLS-agent run \
+  --case-path external/hls-eval/hls_eval_data/c2hlsc/add_round_key \
+  --hls-eval-root external/hls-eval \
+  --data-dir external/hls-eval/hls_eval_data \
+  --model-config configs/deepseek_v4_flash.local.json \
+  --hls-backend vitis \
+  --max-llm-calls 2 \
+  --no-view \
+  --snapshot
+```
+
+成功时重点看：
+
+```text
+can_parse = true
+can_compile = true
+can_pass_testbench = true
+can_synthesize = true
+```
+
+如果失败，仍然是有效实验结果。查看：
+
+```bash
+HLS-agent view <run_dir> --snapshot
+```
+
+重点 artifacts：
+
+```text
+result.json             最终结果布尔值、token 总数、metrics
+stage_records.json      每个阶段的状态、message、artifact 路径
+token_report.json       stage-level token 统计
+token_report.csv        单 case token 表
+budget_ledger.json      LLM/CSIM/SYNTH/COSIM budget 消耗
+selected_skills.json    skill router 命中的 HLS skills
+workflow_status.json    当前/最终 workflow 阶段
+workflow_events.jsonl   阶段事件流
+failure_capsules.json   压缩后的失败证据
+```
+
+## 8. Roo Code 使用方式
+
+在 Roo Code 中选择项目 custom mode：
+
+```text
+hls-eval-agent
+```
+
+建议交互顺序：
 
 ```text
 /hls-start
 /hls-review-contract
+/hls-fill-contract
 /hls-lock-and-run
 /hls-status
 ```
 
-Roo must not run Vitis, CSIM, SYNTH, COSIM, or LLM code generation before the
-contract is locked. The locked contract is an HLS-Eval-like directory:
+Roo 的职责：
+
+- 读取用户自然语言功能需求和目标平台，默认 KV260。
+- 做 Phase-0 diagnosis。
+- 写出 HLS-Eval-like 合同目录。
+- 要求用户审阅和修正合同。
+- 只有用户执行 `/hls-lock-and-run` 后，才调用 `HLS-agent contract lock/run`。
+
+合同主体文件：
 
 ```text
 kernel_description.md
@@ -87,114 +310,126 @@ diagnosis.json
 contract_meta.json
 ```
 
-`kernel_description.md` starts with `## Phase-0 Diagnosis`. The final report
-must state the original diagnosis, whether it was resolved, and the evidence
-from CSIM/SYNTH/COSIM/hidden-test/tool artifacts.
+`kernel_description.md` 第一节必须是：
 
-## HLS-agent Commands
-
-Prepare and review a contract:
-
-```bash
-HLS-agent contract prepare \
-  --request "Implement an AES add_round_key kernel for KV260" \
-  --target-platform KV260 \
-  --out workspaces/contracts/add_round_key
-
-HLS-agent contract review workspaces/contracts/add_round_key
+```text
+## Phase-0 Diagnosis
 ```
 
-Lock and run a complete contract:
+最终报告必须回答：
+
+- 第一次诊断的问题是什么。
+- 是否解决了这个问题。
+- 依据是什么：CSIM、SYNTH、COSIM、hidden test、tool log 或 resource report。
+
+## 9. 合同锁定后运行
+
+如果合同已经完整，可以手动锁定：
 
 ```bash
-HLS-agent contract lock workspaces/contracts/add_round_key
+HLS-agent contract lock workspaces/contracts/add_round_key_demo
+```
 
-HLS-agent contract run workspaces/contracts/add_round_key \
+锁定后运行：
+
+```bash
+HLS-agent contract run workspaces/contracts/add_round_key_demo \
   --model-config configs/deepseek_v4_flash.local.json \
   --hls-backend vitis \
   --max-llm-calls 2 \
   --snapshot
 ```
 
-Run one existing HLS-Eval case directly:
+如果锁定后修改了合同文件，`contract run` 会拒绝执行。需要重新 review 和 lock。
+
+## 10. 批量 benchmark
+
+直接调用 runner：
 
 ```bash
-HLS-agent run \
-  --case-path external/hls-eval/hls_eval_data/machsuite/md_knn \
+python scripts/run_hls_eval_benchmark.py \
   --hls-eval-root external/hls-eval \
   --data-dir external/hls-eval/hls_eval_data \
   --model-config configs/deepseek_v4_flash.local.json \
+  --methods ccd_hls_loop \
+  --samples 1 \
   --hls-backend vitis \
   --max-llm-calls 2 \
-  --no-view
+  --case-filter "add_round_key$" \
+  --out-dir experiments/full/add_round_key_smoke
 ```
 
-Inspect artifacts:
-
-```bash
-HLS-agent recent
-HLS-agent view <run_dir> --snapshot
-HLS-agent doctor
-```
-
-## Artifacts
-
-Runtime outputs are local-only and ignored by Git:
+批量跑更多 case 时，可以调整：
 
 ```text
-experiments/
-workspaces/
-external/
-configs/*.local.json
-configs/*_local.json
+--limit
+--case-filter
+--samples
+--max-llm-calls
+--llm-call-budget
+--csim-budget
+--synth-budget
+--cosim-budget
+--skill-token-budget
+--repair-log-token-budget
 ```
 
-Important per-run artifacts include:
+## 11. 论文实验应该汇报什么
+
+建议至少汇报：
+
+- `can_parse`
+- `can_compile`
+- `can_pass_testbench`
+- `can_synthesize`
+- `total_tokens`
+- `tokens_by_stage`
+- `llm_calls_by_stage`
+- `tool_calls_by_stage`
+- `tokens_per_synth_success`
+- `budget_summary`
+- `selected_skills`
+
+推荐对比：
 
 ```text
-result.json
-stage_records.json
-token_report.json
-token_report.csv
-budget_ledger.json
-selected_skills.json
-workflow_status.json
-workflow_events.jsonl
+HLS-Eval zero-shot
+HLS-Eval agentic baseline
+CCD-HLS v2
+CCD-HLS LOOP
+CRAFT-HLS with contract + skill + budget + token report
 ```
 
-Contract workflows additionally write:
+## 12. 开发与提交前检查
 
-```text
-contract_stage_records.json
-contract_token_report.json
-workflow_token_summary.json
-resolution_report.json
-```
-
-## Repository Layout
-
-```text
-ccd_hls_agent/     Core agent modules, CLI/TUI backend, skills, token/budget logic
-scripts/           Compatibility wrappers and benchmark/cosim scripts
-configs/           Non-secret model profiles
-docs/              CCD-HLS v2/LOOP and FPT 2026 planning notes
-tests/             Unit and integration-style tests
-.roo/              Roo slash commands
-.roomodes          Roo custom mode definition
-```
-
-`scripts/hls_tui.py` and `scripts/hls_agent_tui.py` are compatibility wrappers.
-The canonical command is `HLS-agent`, implemented by `ccd_hls_agent.agent_tui`.
-
-## Validate Before Commit
+提交前运行：
 
 ```bash
 pytest -q
 HLS-agent --help
+git diff --check
 git ls-files -co --exclude-standard -z | xargs -0 -r rg -n --hidden --no-heading 'sk-[A-Za-z0-9_-]{12,}|api_key\s*[:=]\s*"sk-|DEEPSEEK_API_KEY\s*=\s*sk-|OPENAI_API_KEY\s*=\s*sk-' || true
 git status --short
 ```
 
-The current intended commit scope is code and docs only. Do not commit real
-keys, local configs, HLS-Eval external checkouts, run artifacts, or downloaded
-paper PDFs.
+不要提交：
+
+```text
+真实 API key
+configs/*.local.json
+configs/*_local.json
+external/
+experiments/
+workspaces/
+references/papers/*.pdf
+references/web/*.html
+```
+
+## 13. 当前命名约定
+
+- 项目/论文名：`CRAFT-HLS`
+- 未来论文题目：`CRAFT-HLS: Contract-Refined Agentic Flow for Token-Efficient HLS Generation and Repair`
+- CLI 命令：`HLS-agent`
+- Python 包名：`ccd_hls_agent`
+- 核心后端方法：`ccd_hls_loop`
+- 历史方法名：`CCD-HLS v2 / LOOP`

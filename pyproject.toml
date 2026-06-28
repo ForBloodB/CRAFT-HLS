@@ -1,7 +1,7 @@
 [project]
 name = "ccd-hls-agent"
 version = "0.1.0"
-description = "Observable CCD-HLS agent for HLS-Eval with local/cloud OpenAI-compatible model interfaces."
+description = "CRAFT-HLS: contract-refined, token-efficient agentic HLS generation and repair."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
