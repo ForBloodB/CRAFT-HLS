@@ -5,6 +5,7 @@ from scripts.run_hls_eval_benchmark import (
     build_output_code_repair_prompt,
     build_hls_eval_zero_shot_prompt,
     has_diff_markers,
+    normalize_model_config,
     source_has_diff_marker,
     write_kernel_output_code,
     write_kernel_output_code_with_local_repair,
@@ -103,10 +104,27 @@ def test_contract_templates_render_generation_prompts(tmp_path: Path):
     tb.write_text("int main(){ kernel(); return 0; }\n")
     kernel.write_text("// stub\n")
 
-    zero = build_hls_eval_zero_shot_prompt(desc, tb, header)
+    zero = build_hls_eval_zero_shot_prompt(desc, tb, header, Path("external/hls-eval"))
     ccd, selected, _ = build_ccd_hls_gen_v2_prompt(desc, tb, header, kernel, [], token_budget=5000, baseline_prompt_tokens=100)
 
-    assert '<OUTPUT_CODE name="kernel.cpp">' in zero
+    assert '<OUTPUT_CODE name="kernel_name.cpp">' in zero
+    assert "## Overview" in zero
     assert '<OUTPUT_CODE name="kernel.cpp">' in ccd
     assert "No additional CCD context selected" in ccd
     assert selected == []
+
+
+def test_legacy_inline_model_key_moves_to_api_key(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "old-key")
+
+    data = normalize_model_config(
+        {
+            "provider_type": "cloud_openai",
+            "base_url": "https://api.deepseek.com",
+            "api_key_env": "dummy-inline-key",
+        }
+    )
+
+    assert data["api_key"] == "dummy-inline-key"
+    assert data["api_key_env"] is None
+    assert __import__("os").environ["DEEPSEEK_API_KEY"] == "old-key"

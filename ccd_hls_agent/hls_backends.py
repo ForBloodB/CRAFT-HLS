@@ -404,6 +404,7 @@ class VitisUnifiedHLSBackend:
         return {"name": path.name, "top_function": top, "source_files": source_files, "tags": tags}
 
     def _write_config(self, workdir: Path, source_files: list[Path], config: dict[str, Any], include_tb: bool) -> Path:
+        workdir = workdir.resolve()
         cfg = workdir / ("hls_csim.cfg" if include_tb else "hls_synth.cfg")
         top = config.get("top_function")
         part = config.get("part", self.config.part)
@@ -494,13 +495,14 @@ class VitisUnifiedHLSBackend:
         workdir.mkdir(parents=True, exist_ok=True)
         cfg = self._write_config(workdir, source_files, config, include_tb=True)
         result = self._run(
-            [str(vitis_run), "--mode", "hls", "--csim", "--config", str(cfg), "--work_dir", str(workdir / "component")],
+            [str(vitis_run), "--mode", "hls", "--csim", "--config", str(cfg.resolve()), "--work_dir", str((workdir / "component").resolve())],
             workdir,
             config.get("timeout_seconds", self.config.timeout_seconds),
         )
+        compiled = result.return_code == 0 or "Generating csim.exe" in result.stdout or "CSim start" in result.stdout
         result.metrics.update(
             {
-                "can_compile": result.return_code == 0,
+                "can_compile": compiled,
                 "can_pass_testbench": result.return_code == 0,
                 "csim_passed": result.return_code == 0,
                 "tb_data_files": [str(p) for p in discover_tb_data_files(source_files)],
@@ -515,7 +517,7 @@ class VitisUnifiedHLSBackend:
         workdir.mkdir(parents=True, exist_ok=True)
         cfg = self._write_config(workdir, source_files, config, include_tb=False)
         result = self._run(
-            [str(vpp), "-c", "--mode", "hls", "--config", str(cfg), "--work_dir", str(workdir / "component")],
+            [str(vpp), "-c", "--mode", "hls", "--config", str(cfg.resolve()), "--work_dir", str((workdir / "component").resolve())],
             workdir,
             config.get("timeout_seconds", self.config.timeout_seconds),
         )
@@ -534,7 +536,7 @@ class VitisUnifiedHLSBackend:
         component_dir = workdir / "component"
         synth_cfg = self._write_config(workdir, source_files, config, include_tb=False)
         synth_result = self._run(
-            [str(vpp), "-c", "--mode", "hls", "--config", str(synth_cfg), "--work_dir", str(component_dir)],
+            [str(vpp), "-c", "--mode", "hls", "--config", str(synth_cfg.resolve()), "--work_dir", str(component_dir.resolve())],
             workdir,
             config.get("timeout_seconds", self.config.timeout_seconds),
         )
@@ -552,7 +554,7 @@ class VitisUnifiedHLSBackend:
 
         cosim_cfg = self._write_config(workdir, source_files, config, include_tb=True)
         cosim_result = self._run(
-            [str(vitis_run), "--mode", "hls", "--cosim", "--config", str(cosim_cfg), "--work_dir", str(component_dir)],
+            [str(vitis_run), "--mode", "hls", "--cosim", "--config", str(cosim_cfg.resolve()), "--work_dir", str(component_dir.resolve())],
             workdir,
             config.get("timeout_seconds", self.config.timeout_seconds),
         )

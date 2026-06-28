@@ -20,6 +20,9 @@ $failure_capsule_json
 ## Failure History From Previous Loops
 $failure_history_json
 
+## HLS Skill Capsule
+$hls_skill_capsule
+
 ## Task Description
 $description_input
 

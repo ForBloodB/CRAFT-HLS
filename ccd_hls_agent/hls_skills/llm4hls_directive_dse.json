@@ -1,0 +1,12 @@
+{
+  "skill_id": "llm4hls_directive_dse",
+  "title": "LLM4HLS directive DSE",
+  "route": "Use for pragma/directive search after functional correctness, especially when Pareto PPA trade-offs matter.",
+  "summary": "Treat directives as a structured design space; propose few candidate pragma changes, explain the expected PPA movement, and evaluate under budget.",
+  "applicability": ["directive optimization", "PPA", "Pareto search"],
+  "anti_patterns": ["do not add directives that conflict with code dependencies", "do not optimize failed functional code"],
+  "expected_effect": {"PPA": "improves", "tool_calls": "bounded"},
+  "risk": "LLM directive proposals need tool validation.",
+  "source_uri": "references/papers/hls_directives_llm4hls_2025_yao_zhao_sun_zhuo_yu.pdf",
+  "token_estimate": 65
+}

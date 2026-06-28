@@ -1,0 +1,12 @@
+{
+  "skill_id": "hls_signature_repair",
+  "title": "Repair top signature and symbol linkage",
+  "route": "Use for compile errors involving not declared, no matching function, undefined reference, or wrong top signature.",
+  "summary": "Match the implementation exactly to the header and top.txt; keep argument order, pointer/reference qualifiers, typedefs, and extern linkage compatible with the testbench.",
+  "applicability": ["compile error", "signature mismatch", "undefined symbol"],
+  "anti_patterns": ["do not edit header or testbench", "do not rename the top function"],
+  "expected_effect": {"correctness": "improves", "ppa": "neutral"},
+  "risk": "Low if the header is treated as the source of truth.",
+  "source_uri": "references/papers/hls-eval_2025_abikaram_hao.pdf",
+  "token_estimate": 60
+}

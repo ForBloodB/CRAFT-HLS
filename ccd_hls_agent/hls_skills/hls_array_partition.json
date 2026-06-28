@@ -1,0 +1,12 @@
+{
+  "skill_id": "hls_array_partition",
+  "title": "Resolve memory port bottlenecks with array partitioning",
+  "route": "Use when synthesis reports memory port conflicts, load/load conflicts, high II due to arrays, or BRAM access bottlenecks.",
+  "summary": "Partition arrays on the dimension accessed in parallel; prefer cyclic/block/complete partition according to access pattern and resource budget.",
+  "applicability": ["memory port conflict", "array bottleneck", "II violation"],
+  "anti_patterns": ["do not complete-partition large arrays by default", "do not partition unused dimensions"],
+  "expected_effect": {"II": "down", "BRAM_LUT": "may increase"},
+  "risk": "Aggressive partitioning can exceed resources.",
+  "source_uri": "references/papers/autodse_2021_sohrabizadeh_yu_cong.pdf",
+  "token_estimate": 65
+}

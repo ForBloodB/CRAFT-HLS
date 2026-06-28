@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from ccd_hls_agent.hls_backends import MockHLSBackend, VitisUnifiedHLSBackend, discover_tb_data_files
+from ccd_hls_agent.hls_backends import MockHLSBackend, ToolResult, VitisUnifiedHLSBackend, discover_tb_data_files
 
 
 def test_mock_backend(tmp_path: Path):
@@ -60,3 +60,29 @@ def test_vitis_config_includes_tb_data_files(tmp_path: Path):
 
     assert f"tb.file={(case / 'input.data').resolve()}" in text
     assert f"tb.file={(case / 'check.data').resolve()}" in text
+
+
+def test_vitis_csim_distinguishes_compile_from_testbench_failure(tmp_path: Path, monkeypatch):
+    case = tmp_path / "case"
+    case.mkdir()
+    (case / "kernel.cpp").write_text("void kernel(){}\n")
+    (case / "kernel.h").write_text("void kernel();\n")
+    (case / "kernel_tb.cpp").write_text("int main(){return 1;}\n")
+
+    backend = VitisUnifiedHLSBackend()
+    monkeypatch.setattr(backend, "_vitis_run", lambda: Path("/bin/true"))
+
+    def fake_run(*args, **kwargs):
+        return ToolResult(
+            status="failed",
+            return_code=1,
+            stdout="INFO: [SIM 211-2] *************** CSIM start ***************\nGenerating csim.exe\nMismatch at out[0]\n",
+        )
+
+    monkeypatch.setattr(backend, "_run", fake_run)
+
+    result = backend.run_csim(tmp_path / "build", [case / "kernel.cpp", case / "kernel.h", case / "kernel_tb.cpp"], {})
+
+    assert result.metrics["can_compile"] is True
+    assert result.metrics["can_pass_testbench"] is False
+    assert result.metrics["csim_passed"] is False

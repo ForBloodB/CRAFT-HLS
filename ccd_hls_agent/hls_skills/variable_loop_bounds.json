@@ -1,0 +1,12 @@
+{
+  "skill_id": "variable_loop_bounds",
+  "title": "Variable loop-bound transformation",
+  "route": "Use when loops have runtime bounds, poor PE utilization, or conventional pipeline/unroll directives are ineffective.",
+  "summary": "For variable bounds, directive-only optimization may underutilize hardware; consider safe loop restructuring, guards, and fixed upper bounds where the spec allows.",
+  "applicability": ["runtime loop bound", "variable loop", "low utilization"],
+  "anti_patterns": ["do not assume tighter bounds than the spec", "do not break numerical equivalence"],
+  "expected_effect": {"utilization": "up", "latency": "down"},
+  "risk": "Wrong bounds can fail hidden tests.",
+  "source_uri": "references/papers/hls_variable_loop_dse_2018_choi_cong.pdf",
+  "token_estimate": 66
+}

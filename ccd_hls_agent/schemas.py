@@ -25,6 +25,7 @@ class ModelConfig(BaseModel):
     profile_name: str = "local_qwen_coder"
     provider_type: Literal["local_openai", "cloud_openai"] = "local_openai"
     base_url: str = "http://localhost:8000/v1"
+    api_key: str | None = None
     api_key_env: str | None = None
     model: str = "Qwen3-Coder-30B-A3B-Instruct"
     temperature: float = 0.2

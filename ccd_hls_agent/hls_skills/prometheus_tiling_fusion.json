@@ -1,0 +1,12 @@
+{
+  "skill_id": "prometheus_tiling_fusion",
+  "title": "Prometheus-style coupled transforms",
+  "route": "Use after CSIM/SYNTH pass when nested loops are memory or communication bound.",
+  "summary": "Consider tiling, loop permutation, task fusion, compute-communication overlap, and concurrent execution as a coupled design space under resource limits.",
+  "applicability": ["nested loops", "array reuse", "memory traffic"],
+  "anti_patterns": ["do not change public interface", "do not apply before correctness"],
+  "expected_effect": {"latency": "down", "resource": "may increase"},
+  "risk": "Transform interactions can be non-local and require rollback.",
+  "source_uri": "references/papers/prometheus_2025_pouget_lo_pouchet_cong.pdf",
+  "token_estimate": 69
+}

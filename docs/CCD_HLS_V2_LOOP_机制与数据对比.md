@@ -2,10 +2,10 @@
 
 生成时间：2026-06-01
 
-本文比较四个当前保留的完整 HLS-Eval 结果：
+本文比较四个当前保留的完整结果。注意：表中旧 zero-shot / agentic 数据来自本仓库历史适配流程；如果论文或最终 benchmark 要求“原仓库 runner 原封不动”，需要使用 HLS-Eval 原仓库 runner 重新生成 zero-shot / agentic 数据，再替换本表。
 
 - HLS-Eval zero-shot：`experiments/full/full_deepseek_v4_flash_vitis_20260531_final`
-- HLS-Eval agentic：`experiments/full/hls_eval_agentic_deepseek_94x1_20260531`
+- HLS-Eval agentic DeepSeek direct historical adapter：`experiments/full/hls_eval_agentic_deepseek_94x1_20260531`
 - CCD-HLS v2：`experiments/full/full_ccd_hls_gen_v2_deepseek_20260531`
 - CCD-HLS LOOP：`experiments/full/full_ccd_hls_gen_v2_repair_deepseek_20260531_163049`
 
@@ -133,12 +133,13 @@ GENERATION
 
 当前 contract 模板已经独立成可直接修改的 Markdown 文件：
 
-- `ccd_hls_agent/templates/hls_eval_zero_shot.md`
 - `ccd_hls_agent/templates/ccd_hls_gen_v2.md`
 - `ccd_hls_agent/templates/output_code_repair.md`
 - `ccd_hls_agent/templates/hls_repair.md`
 
-其中 v2 主要使用 `ccd_hls_gen_v2.md`，LOOP 会额外使用 `output_code_repair.md` 和 `hls_repair.md`。
+其中 v2 主要使用 `ccd_hls_gen_v2.md`，LOOP 会额外使用 `output_code_repair.md` 和 `hls_repair.md`。HLS-Eval zero-shot 不再使用本地 Markdown contract，而是直接调用 `external/hls-eval/hls_eval/prompts.py` 中的 `build_prompt_gen_zero_shot`。
+
+如果论文或正式对照要求“原仓库 runner 原封不动”，zero-shot 应使用 `external/hls-eval/hls_eval_experiments/hls_gen_zero_shot__main/exp.py`，agentic 应使用 `external/hls-eval/hls_eval_experiments/hls_gen_agent_miniswe/exp.py` 或 `hls_gen_agent_pi/exp.py`。本仓库保留的 DeepSeek direct agentic 脚本是适配器，不应和原仓库 runner 结果混称。
 
 ## 4. 指标口径
 
@@ -166,7 +167,7 @@ GENERATION
 | CSIM pass testbench | 63 / 94, 67.02% | 75 / 94, 79.79% | 67 / 94, 71.28% | 84 / 94, 89.36% |
 | SYNTH 成功 | 62 / 94, 65.96% | 74 / 94, 78.72% | 67 / 94, 71.28% | 84 / 94, 89.36% |
 | COSIM 全量通过 | 未全量执行 | 73 / 94, 77.66% | 未全量执行 | 82 / 94, 87.23% |
-| COSIM 通过 | 未全量执行 | 73 / 94, 98.65% | 未全量执行 | 82 / 94, 97.62% |
+| COSIM 通过 | 未全量执行 | 73 / 74, 98.65% | 未全量执行 | 82 / 84, 97.62% |
 | COSIM 平均耗时 | 未全量执行 | 72.0 s | 未全量执行 | 84.8 s |
 | 平均 prompt tokens / case | 1825.1 | 35437.5 | 1975.9 | 4696.4 |
 | 平均 completion tokens / case | 1923.6 | 13862.4 | 1977.1 | 3885.5 |
@@ -199,7 +200,7 @@ LOOP 的 token/调用代价：
 
 ## 7. 结论
 
-HLS-Eval zero-shot 是最朴素的单轮基线，token 最少，但成功率最低。
+HLS-Eval zero-shot 是最朴素的单轮基线，当前代码直接使用原仓库的 `build_prompt_gen_zero_shot`，token 最少，但成功率最低。
 
 HLS-Eval agentic 通过多步 shell action 提升了成功率，但平均每个 case 需要 7.97 次 LLM 调用轮次，平均 total tokens 最高。
 

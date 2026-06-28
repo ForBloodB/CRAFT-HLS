@@ -1,0 +1,12 @@
+{
+  "skill_id": "autodse_bottleneck",
+  "title": "Bottleneck-guided DSE",
+  "route": "Use for PPA optimization when reports identify a dominant latency, II, resource, or memory bottleneck.",
+  "summary": "Change only high-impact knobs for the current bottleneck, evaluate, and keep best-so-far rather than sweeping many pragmas.",
+  "applicability": ["PPA_OPT", "bottleneck", "QoR search"],
+  "anti_patterns": ["do not change many directives at once", "do not ignore current best candidate"],
+  "expected_effect": {"search_cost": "down", "qor": "improves"},
+  "risk": "May miss global optima but preserves budget.",
+  "source_uri": "references/papers/autodse_2021_sohrabizadeh_yu_cong.pdf",
+  "token_estimate": 61
+}

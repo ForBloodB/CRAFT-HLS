@@ -73,14 +73,3 @@ def read_text(path: Path, default: str = "") -> str:
         return path.read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
         return default
-
-
-def load_dotenv(path: Path = Path(".env")) -> None:
-    if not path.exists():
-        return
-    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip())

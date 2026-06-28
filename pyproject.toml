@@ -9,9 +9,15 @@ dependencies = [
     "httpx>=0.27.0",
 ]
 
+[project.scripts]
+HLS-agent = "ccd_hls_agent.agent_tui:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
+]
+tui = [
+    "textual>=0.86.0",
 ]
 hls-eval = [
     "hls-eval @ git+https://github.com/sharc-lab/hls-eval.git",

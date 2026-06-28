@@ -1,0 +1,12 @@
+{
+  "skill_id": "hls_loop_pipeline_unroll",
+  "title": "Loop pipeline and unroll basics",
+  "route": "Use after correctness when latency or II is loop-bound and memory bandwidth is sufficient.",
+  "summary": "Pipeline the innermost profitable loop first; unroll only when dependencies and memory ports allow it, and keep trip counts/resource growth bounded.",
+  "applicability": ["loop bottleneck", "high latency", "II target"],
+  "anti_patterns": ["do not unroll memory-port-limited loops blindly", "do not optimize before CSIM passes"],
+  "expected_effect": {"latency": "down", "resource": "may increase"},
+  "risk": "Can fail II or inflate LUT/DSP/BRAM when dependencies are ignored.",
+  "source_uri": "references/papers/hlspilot_2024_xiong_et_al.pdf",
+  "token_estimate": 66
+}

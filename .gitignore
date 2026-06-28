@@ -1,5 +1,7 @@
 .hls_agent/
 .env
+configs/*.local.json
+configs/*_local.json
 __pycache__/
 .pytest_cache/
 *.pyc
@@ -8,3 +10,6 @@ frontend/dist/
 *.egg-info/
 external/
 experiments/
+workspaces/
+references/papers/*.pdf
+references/web/*.html

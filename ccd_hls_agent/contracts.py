@@ -38,16 +38,6 @@ def render_atom_lines(selected_atoms: list[Any]) -> str:
     return "\n".join(lines) or "- No additional CCD context selected."
 
 
-def build_hls_eval_zero_shot_prompt(description: Path, tb: Path, header: Path, kernel: Path) -> str:
-    return render_contract_template(
-        "hls_eval_zero_shot.md",
-        kernel_name=kernel.name,
-        description_input=_input_code(description),
-        tb_input=_input_code(tb),
-        header_input=_input_code(header),
-    )
-
-
 def build_ccd_hls_gen_v2_prompt(
     description: Path,
     tb: Path,
@@ -57,6 +47,7 @@ def build_ccd_hls_gen_v2_prompt(
     *,
     token_budget: int,
     baseline_prompt_tokens: int,
+    hls_skill_capsule: str = "- No HLS skills selected.",
     template_dir: Path | None = None,
 ) -> tuple[str, list[Any], int]:
     max_prompt_tokens = max(1, min(token_budget, int(baseline_prompt_tokens * 1.10)))
@@ -67,6 +58,7 @@ def build_ccd_hls_gen_v2_prompt(
             template_dir,
             kernel_name=kernel.name,
             ccd_context=render_atom_lines(atom_subset),
+            hls_skill_capsule=hls_skill_capsule,
             description_input=_input_code(description),
             tb_input=_input_code(tb),
             header_input=_input_code(header),
@@ -101,6 +93,7 @@ def build_hls_repair_prompt(
     failure_history: list[dict[str, Any]],
     attempt: int,
     max_llm_calls: int,
+    hls_skill_capsule: str = "- No HLS skills selected.",
     template_dir: Path | None = None,
 ) -> str:
     return render_contract_template(
@@ -112,6 +105,7 @@ def build_hls_repair_prompt(
         max_llm_calls=max_llm_calls,
         failure_capsule_json=json.dumps(failure_capsule, ensure_ascii=False, indent=2),
         failure_history_json=json.dumps(summarize_failure_history(failure_history), ensure_ascii=False, indent=2),
+        hls_skill_capsule=hls_skill_capsule,
         description_input=_input_code(description, token_budget=1200),
         header_input=_input_code(header, token_budget=1600),
         tb_input=_input_code(tb, token_budget=2200),

@@ -36,15 +36,17 @@ class OpenAICompatibleModelClient:
 
     @property
     def api_key(self) -> str:
+        if self.config.api_key:
+            return self.config.api_key
         if self.config.api_key_env:
             return os.environ.get(self.config.api_key_env, "")
         return os.environ.get("OPENAI_API_KEY", "local-no-key")
 
     async def check_health(self) -> dict[str, Any]:
-        if self.config.provider_type == "cloud_openai" and self.config.api_key_env and not os.environ.get(self.config.api_key_env):
+        if self.config.provider_type == "cloud_openai" and not self.api_key:
             return {
                 "available": False,
-                "detail": f"缺少环境变量 {self.config.api_key_env}",
+                "detail": "缺少模型 API key",
             }
 
         url = self.config.base_url.rstrip("/") + "/models"

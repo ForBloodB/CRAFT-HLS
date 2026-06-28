@@ -8,12 +8,14 @@ import json
 import os
 import re
 import shutil
+import sys
 import time
 from dataclasses import asdict, dataclass
 from math import comb
 from pathlib import Path
 from typing import Any
 
+from ccd_hls_agent.budget import BudgetLedger
 from ccd_hls_agent.ccd import (
     atomize_static_scan,
     choose_frontier,
@@ -23,7 +25,6 @@ from ccd_hls_agent.ccd import (
 )
 from ccd_hls_agent.contracts import (
     build_ccd_hls_gen_v2_prompt as render_ccd_hls_gen_v2_prompt,
-    build_hls_eval_zero_shot_prompt as render_hls_eval_zero_shot_prompt,
     build_hls_repair_prompt as render_hls_repair_prompt,
     build_output_code_repair_prompt as render_output_code_repair_prompt,
 )
@@ -39,7 +40,11 @@ from ccd_hls_agent.hls_backends import HLSBackendConfig, ToolResult, build_hls_b
 from ccd_hls_agent.json_utils import make_json_safe
 from ccd_hls_agent.model_clients import build_model_client
 from ccd_hls_agent.schemas import ModelConfig
+from ccd_hls_agent.skills import render_skill_capsule, route_skills
+from ccd_hls_agent.task_modes import TaskMode, classify_task_mode, is_generation_stub
+from ccd_hls_agent.token_report import TOKEN_STAGES, build_token_report, write_case_token_report, write_token_summary
 from ccd_hls_agent.utils import estimate_tokens, json_dumps, new_id, read_text, utc_now, write_text
+from ccd_hls_agent.workflow import write_workflow_artifacts_from_stage_records
 
 
 SOURCE_EXTENSIONS = {".c", ".cc", ".cpp", ".h", ".hh", ".hpp"}
@@ -73,31 +78,18 @@ def result_to_json_dict(result: CaseResult) -> dict[str, Any]:
     return make_json_safe(asdict(result))
 
 
-def load_env_file(path: Path) -> None:
-    if not path.exists():
-        return
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip())
-
-
 def normalize_model_config(model_data: dict[str, Any]) -> dict[str, Any]:
     api_key_env = str(model_data.get("api_key_env") or "")
     if api_key_env and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", api_key_env):
-        fallback_env = "DEEPSEEK_API_KEY" if "deepseek" in str(model_data.get("base_url", "")).lower() else "MODEL_API_KEY"
-        os.environ.setdefault(fallback_env, api_key_env)
-        model_data = {**model_data, "api_key_env": fallback_env}
+        model_data = {**model_data, "api_key": api_key_env, "api_key_env": None}
     return model_data
 
 
 def public_model_dump(model: ModelConfig) -> dict[str, Any]:
     data = model.model_dump()
-    if data.get("api_key_env") and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(data["api_key_env"])):
-        data["api_key_env"] = "<redacted-invalid-env-field>"
-    data["api_key"] = "***" if model.api_key_env else None
+    data["api_key"] = "***" if model.api_key else None
+    if data.get("api_key_env"):
+        data["api_key_env"] = str(data["api_key_env"])
     return data
 
 
@@ -151,8 +143,19 @@ def prepare_generation_case(src_case: Path, dst_case: Path) -> dict[str, Path]:
     return {"header": header, "tb": tb, "kernel": kernel, "description": dst_case / "kernel_description.md"}
 
 
-def build_hls_eval_zero_shot_prompt(description: Path, tb: Path, header: Path) -> str:
-    return render_hls_eval_zero_shot_prompt(description, tb, header, find_kernel_cpp(description.parent))
+def ensure_hls_eval_importable(hls_eval_root: Path | None) -> None:
+    if not hls_eval_root:
+        return
+    root = hls_eval_root.expanduser().resolve()
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+
+
+def build_hls_eval_zero_shot_prompt(description: Path, tb: Path, header: Path, hls_eval_root: Path | None = None) -> str:
+    ensure_hls_eval_importable(hls_eval_root or Path("external/hls-eval"))
+    from hls_eval.prompts import build_prompt_gen_zero_shot
+
+    return build_prompt_gen_zero_shot(description, tb, header)
 
 
 def build_ccd_hls_gen_v2_prompt(
@@ -164,6 +167,7 @@ def build_ccd_hls_gen_v2_prompt(
     *,
     token_budget: int,
     baseline_prompt_tokens: int,
+    hls_skill_capsule: str = "- No HLS skills selected.",
 ) -> tuple[str, list[Any], int]:
     return render_ccd_hls_gen_v2_prompt(
         description,
@@ -173,6 +177,7 @@ def build_ccd_hls_gen_v2_prompt(
         selected_atoms,
         token_budget=token_budget,
         baseline_prompt_tokens=baseline_prompt_tokens,
+        hls_skill_capsule=hls_skill_capsule,
     )
 
 
@@ -306,6 +311,7 @@ def build_hls_repair_prompt(
     failure_history: list[dict[str, Any]],
     attempt: int,
     max_llm_calls: int,
+    hls_skill_capsule: str = "- No HLS skills selected.",
 ) -> str:
     return render_hls_repair_prompt(
         stage=stage,
@@ -317,6 +323,7 @@ def build_hls_repair_prompt(
         failure_history=failure_history,
         attempt=attempt,
         max_llm_calls=max_llm_calls,
+        hls_skill_capsule=hls_skill_capsule,
     )
 
 
@@ -466,67 +473,6 @@ async def run_synth_stage(
     return can_synthesize, metrics, synth
 
 
-async def run_zero_shot_case(
-    experiment_id: str,
-    case_path: Path,
-    workdir: Path,
-    model: ModelConfig,
-    backend_kind: str,
-    hls_eval_root: Path | None,
-    sample_idx: int,
-) -> CaseResult:
-    t0 = time.monotonic()
-    files = prepare_generation_case(case_path, workdir / "design")
-    prompt = build_hls_eval_zero_shot_prompt(files["description"], files["tb"], files["header"])
-    write_text(workdir / "prompt.txt", prompt)
-    client = build_model_client(model)
-    can_parse = False
-    error = None
-    completion = ""
-    prompt_tokens = estimate_tokens(prompt)
-    completion_tokens = 0
-    llm_duration_ms = 0
-    tool_calls = 0
-    flags = {"can_compile": False, "can_pass_testbench": False, "can_synthesize": False}
-    metrics: dict[str, Any] = {}
-    try:
-        result = await client.complete(prompt)
-        completion = result.content
-        prompt_tokens = result.prompt_tokens
-        completion_tokens = result.completion_tokens
-        llm_duration_ms = result.duration_ms
-        write_text(workdir / "response.txt", completion)
-        generated = extract_output_code(completion)
-        can_parse = True
-        for filename, code in generated.items():
-            target = workdir / "design" / filename
-            write_text(target, code)
-        flags, metrics, tool_calls = await evaluate_design(backend_kind, hls_eval_root, workdir / "design", workdir / "build", read_text(workdir / "design" / "top.txt").strip())
-    except Exception as exc:
-        error = str(exc)
-    return CaseResult(
-        experiment_id=experiment_id,
-        method="hls_eval_zero_shot",
-        sample_idx=sample_idx,
-        case_name=case_path.name,
-        case_path=str(case_path),
-        tags=parse_tags(case_path / "hls_eval_config.toml"),
-        can_parse=can_parse,
-        can_compile=flags["can_compile"],
-        can_pass_testbench=flags["can_pass_testbench"],
-        can_synthesize=flags["can_synthesize"],
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        total_tokens=prompt_tokens + completion_tokens,
-        llm_duration_ms=llm_duration_ms,
-        tool_calls=tool_calls,
-        wall_time_ms=int((time.monotonic() - t0) * 1000),
-        error=error,
-        metrics=metrics,
-        artifacts_dir=str(workdir),
-    )
-
-
 async def run_ccd_gen_v2_case(
     experiment_id: str,
     case_path: Path,
@@ -540,15 +486,36 @@ async def run_ccd_gen_v2_case(
     repair_log_token_budget: int = 1200,
     early_stop_similarity_threshold: float = 0.92,
     method_name: str = "ccd_hls_gen_v2",
+    llm_call_budget: int | None = None,
+    csim_budget: int | None = None,
+    synth_budget: int | None = None,
+    cosim_budget: int | None = 0,
+    unified_credit_budget: int | None = None,
+    skill_token_budget: int = 600,
 ) -> CaseResult:
     t0 = time.monotonic()
     files = prepare_generation_case(case_path, workdir / "design")
-    zero_prompt = build_hls_eval_zero_shot_prompt(files["description"], files["tb"], files["header"])
+    task_mode = TaskMode.GENERATE
+    budget = BudgetLedger.from_limits(
+        llm_calls=max_llm_calls if llm_call_budget is None else llm_call_budget,
+        csim_calls=csim_budget,
+        synth_calls=synth_budget,
+        cosim_calls=cosim_budget,
+        unified_credits=unified_credit_budget,
+    )
+    zero_prompt = build_hls_eval_zero_shot_prompt(files["description"], files["tb"], files["header"], hls_eval_root)
     scan = scan_benchmark(workdir / "design")
     frontier = choose_frontier(scan, scan.blocker)
     atoms = atomize_static_scan("experiment", "run", workdir / "design", scan)
     scored = score_atoms(atoms, frontier, latest_blocker=scan.blocker)
     candidate_atoms, dropped = select_context(scored, 800, max_atoms=6)
+    selected_skills, dropped_skills = route_skills(
+        task_mode=task_mode,
+        scan=scan,
+        selected_atoms=candidate_atoms,
+        token_budget=skill_token_budget,
+    )
+    skill_capsule = render_skill_capsule(selected_skills)
     prompt, selected, max_prompt_tokens = build_ccd_hls_gen_v2_prompt(
         files["description"],
         files["tb"],
@@ -557,11 +524,14 @@ async def run_ccd_gen_v2_case(
         candidate_atoms,
         token_budget=prompt_budget,
         baseline_prompt_tokens=estimate_tokens(zero_prompt),
+        hls_skill_capsule=skill_capsule,
     )
     dropped = dropped + [atom for atom in candidate_atoms if atom not in selected]
     write_text(workdir / "prompt.txt", prompt)
     write_text(workdir / "selected_atoms.json", json_dumps([a.model_dump() for a in selected]))
     write_text(workdir / "dropped_atoms.json", json_dumps([a.model_dump() for a in dropped]))
+    write_text(workdir / "selected_skills.json", json_dumps([skill.model_dump() for skill in selected_skills]))
+    write_text(workdir / "dropped_skills.json", json_dumps([skill.model_dump() for skill in dropped_skills]))
 
     client = build_model_client(model)
     can_parse = False
@@ -579,10 +549,12 @@ async def run_ccd_gen_v2_case(
         "parse_mode": None,
         "fallback_reason": None,
         "stage_status": "INIT",
+        "task_mode": task_mode.value,
         "terminal_stage": None,
         "stopped_reason": None,
         "llm_calls_used": 0,
         "max_llm_calls": max_llm_calls,
+        "budget_summary": budget.summary(),
         "repair_log_token_budget": repair_log_token_budget,
         "early_stop_enabled": early_stop_similarity_threshold > 0,
         "early_stop_similarity_threshold": early_stop_similarity_threshold,
@@ -602,6 +574,9 @@ async def run_ccd_gen_v2_case(
         "selected_atoms": len(selected),
         "dropped_atoms": len(dropped),
         "selected_atoms_tokens": sum(atom.token_estimate for atom in selected),
+        "selected_skills": [skill.skill_id for skill in selected_skills],
+        "selected_skill_tokens": sum(skill.token_estimate for skill in selected_skills),
+        "dropped_skills": len(dropped_skills),
         "max_prompt_tokens": max_prompt_tokens,
         "zero_shot_prompt_tokens_est": estimate_tokens(zero_prompt),
         "frontier": frontier,
@@ -611,18 +586,42 @@ async def run_ccd_gen_v2_case(
         metrics["terminal_stage"] = stage
         metrics["stopped_reason"] = reason
         metrics["stage_status"] = "FAILED" if stage != "DONE" else "DONE"
-        metrics["budget_exhausted"] = llm_calls_used >= max_llm_calls and stage != "DONE"
+        metrics["budget_exhausted"] = reason.startswith("budget_exhausted") or (llm_calls_used >= max_llm_calls and stage != "DONE")
 
     async def call_llm(stage: str, prompt_text: str, system_prompt: str, *, label: str):
+        nonlocal selected_skills
         nonlocal prompt_tokens, completion_tokens, llm_duration_ms, llm_calls_used
         if llm_calls_used >= max_llm_calls:
+            metrics["budget_summary"] = budget.summary()
+            return None
+        if not budget.consume("llm_calls", stage=stage, label=label):
+            metrics["budget_summary"] = budget.summary()
             return None
         llm_calls_used += 1
         call_prefix = f"llm_call_{llm_calls_used:02d}_{label}"
         prompt_path = workdir / f"{call_prefix}_prompt.txt"
         response_path = workdir / f"{call_prefix}_response.txt"
         write_text(prompt_path, prompt_text)
-        result = await client.complete(prompt_text, system_prompt=system_prompt)
+        try:
+            result = await client.complete(prompt_text, system_prompt=system_prompt)
+        except Exception as exc:
+            metrics["llm_calls_used"] = llm_calls_used
+            add_stage_record(
+                stage_records,
+                stage=stage,
+                status="failed",
+                message=f"LLM call {llm_calls_used}/{max_llm_calls} failed: {exc}",
+                metrics={
+                    "llm_calls_used": llm_calls_used,
+                    "prompt_tokens_est": estimate_tokens(prompt_text),
+                    "skill_ids": [skill.skill_id for skill in selected_skills],
+                    "skill_tokens": sum(skill.token_estimate for skill in selected_skills),
+                    "skill_sources": [skill.source_uri for skill in selected_skills],
+                },
+                artifacts={"prompt": str(prompt_path), "response": str(response_path)},
+            )
+            metrics["budget_summary"] = budget.summary()
+            raise
         write_text(response_path, result.content)
         prompt_tokens += result.prompt_tokens
         completion_tokens += result.completion_tokens
@@ -638,9 +637,13 @@ async def run_ccd_gen_v2_case(
                 "completion_tokens": result.completion_tokens,
                 "duration_ms": result.duration_ms,
                 "llm_calls_used": llm_calls_used,
+                "skill_ids": [skill.skill_id for skill in selected_skills],
+                "skill_tokens": sum(skill.token_estimate for skill in selected_skills),
+                "skill_sources": [skill.source_uri for skill in selected_skills],
             },
             artifacts={"prompt": str(prompt_path), "response": str(response_path)},
         )
+        metrics["budget_summary"] = budget.summary()
         return result
 
     async def parse_model_output(stage: str, content: str, *, label: str) -> tuple[bool, str | None]:
@@ -750,6 +753,17 @@ async def run_ccd_gen_v2_case(
             metrics["attempt_count"] = validation_attempt
             top_function = read_text(workdir / "design" / "top.txt").strip()
             metrics["stage_status"] = "CSIM"
+            if not budget.consume("csim_calls", stage="CSIM", label=f"attempt_{validation_attempt}"):
+                metrics["budget_summary"] = budget.summary()
+                set_terminal("CSIM", budget.exhausted_reason("csim_calls"))
+                add_stage_record(
+                    stage_records,
+                    stage="CSIM",
+                    status="skipped",
+                    message="CSIM skipped because the CSIM budget is exhausted.",
+                    metrics={"attempt": validation_attempt, "budget_summary": budget.summary()},
+                )
+                break
             csim_build = workdir / "build" / f"csim_attempt_{validation_attempt}"
             csim_flags, csim_metrics, csim_result = await run_csim_stage(
                 backend_kind,
@@ -759,7 +773,13 @@ async def run_ccd_gen_v2_case(
                 top_function,
             )
             tool_calls += 1
+            metrics["budget_summary"] = budget.summary()
             flags.update(csim_flags)
+            task_mode = classify_task_mode(
+                generation_stub=is_generation_stub(files["kernel"]),
+                csim_flags=csim_flags,
+            )
+            metrics["task_mode"] = task_mode.value
             metrics.update(csim_metrics)
             hls_artifact = write_json_artifact(
                 workdir / f"hls_result_csim_attempt_{validation_attempt}.json",
@@ -779,12 +799,29 @@ async def run_ccd_gen_v2_case(
                 capsule = build_failure_capsule("CSIM", csim_result, token_budget=repair_log_token_budget)
                 failure_capsules.append(capsule)
                 capsule_path = write_json_artifact(workdir / f"failure_capsule_csim_attempt_{validation_attempt}.json", capsule)
+                selected_skills, dropped_skills = route_skills(
+                    task_mode=metrics.get("task_mode") or task_mode.value,
+                    scan=scan,
+                    failure_capsule=capsule,
+                    latest_metrics=csim_metrics,
+                    selected_atoms=selected,
+                    token_budget=skill_token_budget,
+                )
+                skill_capsule = render_skill_capsule(selected_skills)
+                write_text(workdir / "selected_skills.json", json_dumps([skill.model_dump() for skill in selected_skills]))
+                write_text(workdir / "dropped_skills.json", json_dumps([skill.model_dump() for skill in dropped_skills]))
                 add_stage_record(
                     stage_records,
                     stage="CSIM",
                     status="failed",
                     message=f"CSIM failed at attempt {validation_attempt}.",
-                    metrics={"attempt": validation_attempt, **csim_flags},
+                    metrics={
+                        "attempt": validation_attempt,
+                        **csim_flags,
+                        "skill_ids": [skill.skill_id for skill in selected_skills],
+                        "skill_tokens": sum(skill.token_estimate for skill in selected_skills),
+                        "skill_sources": [skill.source_uri for skill in selected_skills],
+                    },
                     artifacts={"hls_result": hls_artifact, "failure_capsule": capsule_path},
                 )
                 should_stop, similarity = repeated_failure_early_stop(
@@ -823,6 +860,7 @@ async def run_ccd_gen_v2_case(
                     failure_history=failure_capsules,
                     attempt=metrics["repair_rounds"],
                     max_llm_calls=max_llm_calls,
+                    hls_skill_capsule=skill_capsule,
                 )
                 repair_result = await call_llm(
                     "CSIM_REPAIR",
@@ -840,6 +878,17 @@ async def run_ccd_gen_v2_case(
                 continue
 
             metrics["stage_status"] = "SYNTH"
+            if not budget.consume("synth_calls", stage="SYNTH", label=f"attempt_{validation_attempt}"):
+                metrics["budget_summary"] = budget.summary()
+                set_terminal("SYNTH", budget.exhausted_reason("synth_calls"))
+                add_stage_record(
+                    stage_records,
+                    stage="SYNTH",
+                    status="skipped",
+                    message="Synthesis skipped because the SYNTH budget is exhausted.",
+                    metrics={"attempt": validation_attempt, "budget_summary": budget.summary()},
+                )
+                break
             synth_build = workdir / "build" / f"synth_attempt_{validation_attempt}"
             can_synth, synth_metrics, synth_result = await run_synth_stage(
                 backend_kind,
@@ -849,7 +898,14 @@ async def run_ccd_gen_v2_case(
                 top_function,
             )
             tool_calls += 1
+            metrics["budget_summary"] = budget.summary()
             flags["can_synthesize"] = can_synth
+            task_mode = classify_task_mode(
+                generation_stub=is_generation_stub(files["kernel"]),
+                csim_flags={"can_compile": flags["can_compile"], "can_pass_testbench": flags["can_pass_testbench"]},
+                synth_passed=can_synth,
+            )
+            metrics["task_mode"] = task_mode.value
             metrics.update(synth_metrics)
             synth_artifact = write_json_artifact(
                 workdir / f"hls_result_synth_attempt_{validation_attempt}.json",
@@ -870,12 +926,29 @@ async def run_ccd_gen_v2_case(
             capsule = build_failure_capsule("SYNTH", synth_result, token_budget=repair_log_token_budget)
             failure_capsules.append(capsule)
             capsule_path = write_json_artifact(workdir / f"failure_capsule_synth_attempt_{validation_attempt}.json", capsule)
+            selected_skills, dropped_skills = route_skills(
+                task_mode=metrics.get("task_mode") or task_mode.value,
+                scan=scan,
+                failure_capsule=capsule,
+                latest_metrics=synth_metrics,
+                selected_atoms=selected,
+                token_budget=skill_token_budget,
+            )
+            skill_capsule = render_skill_capsule(selected_skills)
+            write_text(workdir / "selected_skills.json", json_dumps([skill.model_dump() for skill in selected_skills]))
+            write_text(workdir / "dropped_skills.json", json_dumps([skill.model_dump() for skill in dropped_skills]))
             add_stage_record(
                 stage_records,
                 stage="SYNTH",
                 status="failed",
                 message=f"Synthesis failed at attempt {validation_attempt}.",
-                metrics={"attempt": validation_attempt, "can_synthesize": False},
+                metrics={
+                    "attempt": validation_attempt,
+                    "can_synthesize": False,
+                    "skill_ids": [skill.skill_id for skill in selected_skills],
+                    "skill_tokens": sum(skill.token_estimate for skill in selected_skills),
+                    "skill_sources": [skill.source_uri for skill in selected_skills],
+                },
                 artifacts={"hls_result": synth_artifact, "failure_capsule": capsule_path},
             )
             should_stop, similarity = repeated_failure_early_stop(
@@ -914,6 +987,7 @@ async def run_ccd_gen_v2_case(
                 failure_history=failure_capsules,
                 attempt=metrics["repair_rounds"],
                 max_llm_calls=max_llm_calls,
+                hls_skill_capsule=skill_capsule,
             )
             repair_result = await call_llm(
                 "SYNTH_REPAIR",
@@ -937,13 +1011,17 @@ async def run_ccd_gen_v2_case(
     except Exception as exc:
         error = error or str(exc)
         metrics["source_has_diff_marker"] = source_has_diff_marker(workdir / "design")
+        if metrics.get("terminal_stage") is None:
+            set_terminal(metrics.get("stage_status") or "FAILED", "exception")
     metrics["llm_calls_used"] = llm_calls_used
     metrics["stage_records"] = stage_records
     metrics["failure_capsules"] = failure_capsules
     metrics["source_has_diff_marker"] = source_has_diff_marker(workdir / "design")
+    metrics["budget_summary"] = budget.summary()
     write_json_artifact(workdir / "stage_records.json", stage_records)
     write_json_artifact(workdir / "failure_capsules.json", failure_capsules)
-    return CaseResult(
+    write_json_artifact(workdir / "budget_ledger.json", budget.model_dump())
+    result = CaseResult(
         experiment_id=experiment_id,
         method=method_name,
         sample_idx=sample_idx,
@@ -964,6 +1042,16 @@ async def run_ccd_gen_v2_case(
         metrics=metrics,
         artifacts_dir=str(workdir),
     )
+    token_report = write_case_token_report(result, workdir)
+    metrics["token_report"] = token_report
+    workflow_status = write_workflow_artifacts_from_stage_records(
+        workdir,
+        stage_records,
+        final_status="done" if flags["can_synthesize"] else "failed",
+        message=metrics.get("stopped_reason") or ("synth_passed" if flags["can_synthesize"] else "run_failed"),
+    )
+    metrics["workflow_status"] = workflow_status
+    return result
 
 
 def pass_at_k(successes: list[bool], k: int) -> float:
@@ -978,9 +1066,41 @@ def pass_at_k(successes: list[bool], k: int) -> float:
     return 1.0 - (comb(n - c, k) / comb(n, k) if n - c >= k else 0.0)
 
 
+def build_operator_memory_rows(results: list[CaseResult]) -> list[dict[str, Any]]:
+    rows = []
+    for result in results:
+        metrics = result.metrics or {}
+        failures = metrics.get("failure_capsules", []) or []
+        last_failure = failures[-1] if failures else {}
+        fix_stage = None
+        for record in metrics.get("stage_records", []) or []:
+            if str(record.get("stage", "")).endswith("_REPAIR") and record.get("status") == "completed":
+                fix_stage = record.get("stage")
+        token_report = metrics.get("token_report") or {}
+        token_cost = token_report.get("total_tokens", result.total_tokens)
+        rows.append(
+            make_json_safe(
+                {
+                    "case_name": result.case_name,
+                    "family": Path(result.case_path).parent.name,
+                    "failure_type": last_failure.get("failure_type"),
+                    "terminal_stage": metrics.get("terminal_stage"),
+                    "fix_stage": fix_stage,
+                    "synth_passed": result.can_synthesize,
+                    "token_cost": token_cost,
+                    "artifact_uri": result.artifacts_dir,
+                }
+            )
+        )
+    return rows
+
+
 def summarize(results: list[CaseResult], out_dir: Path, pass_ks: list[int]) -> None:
     rows = [result_to_json_dict(r) for r in results]
     write_text(out_dir / "results.jsonl", "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n")
+    token_summary_rows = write_token_summary(results, out_dir)
+    memory_rows = build_operator_memory_rows(results)
+    write_text(out_dir / "operator_memory.jsonl", "\n".join(json.dumps(row, ensure_ascii=False) for row in memory_rows) + ("\n" if memory_rows else ""))
     fieldnames = [
         "experiment_id",
         "method",
@@ -1018,6 +1138,13 @@ def summarize(results: list[CaseResult], out_dir: Path, pass_ks: list[int]) -> N
             "avg_tool_calls": sum(r.tool_calls for r in method_results) / max(1, n),
             "avg_wall_time_ms": sum(r.wall_time_ms for r in method_results) / max(1, n),
         }
+        token_row = next((row for row in token_summary_rows if row.get("method") == method), {})
+        base["tokens_per_synth_success"] = token_row.get("tokens_per_synth_success")
+        base["tokens_per_csim_success"] = token_row.get("tokens_per_csim_success")
+        for stage in TOKEN_STAGES:
+            base[f"avg_tokens_{stage.lower()}"] = token_row.get(f"avg_tokens_{stage.lower()}", 0)
+            base[f"llm_calls_{stage.lower()}"] = token_row.get(f"llm_calls_{stage.lower()}", 0)
+            base[f"tool_calls_{stage.lower()}"] = token_row.get(f"tool_calls_{stage.lower()}", 0)
         for metric in ["can_parse", "can_compile", "can_pass_testbench", "can_synthesize"]:
             base[f"{metric}_rate"] = sum(1 for r in method_results if getattr(r, metric)) / max(1, n)
             for k in pass_ks:
@@ -1044,6 +1171,13 @@ def summarize(results: list[CaseResult], out_dir: Path, pass_ks: list[int]) -> N
         lines.append(f"- avg prompt tokens: {row['avg_prompt_tokens']:.1f}")
         lines.append(f"- avg completion tokens: {row['avg_completion_tokens']:.1f}")
         lines.append(f"- avg total tokens: {row['avg_total_tokens']:.1f}")
+        if row.get("tokens_per_synth_success") is not None:
+            lines.append(f"- tokens per synth success: {float(row['tokens_per_synth_success']):.1f}")
+        if row.get("tokens_per_csim_success") is not None:
+            lines.append(f"- tokens per csim success: {float(row['tokens_per_csim_success']):.1f}")
+        lines.append("- avg tokens by stage:")
+        for stage in TOKEN_STAGES:
+            lines.append(f"  - {stage}: {float(row.get(f'avg_tokens_{stage.lower()}', 0) or 0):.1f}")
         for k in pass_ks:
             lines.append(f"- Can Synthesize pass@{k}: {row.get(f'can_synthesize_pass@{k}', 0):.2%}")
         lines.append("")
@@ -1051,19 +1185,24 @@ def summarize(results: list[CaseResult], out_dir: Path, pass_ks: list[int]) -> N
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="Run CCD-HLS vs HLS-Eval zero-shot benchmark.")
+    parser = argparse.ArgumentParser(description="Run CCD-HLS benchmark methods. HLS-Eval baselines should be run with the original HLS-Eval runners.")
     parser.add_argument("--hls-eval-root", type=Path, default=Path("external/hls-eval"))
     parser.add_argument("--data-dir", type=Path, default=None)
     parser.add_argument("--model-config", type=Path, default=Path("configs/deepseek_v4_flash.json"))
-    parser.add_argument("--env-file", type=Path, default=Path(".env"))
     parser.add_argument("--out-dir", type=Path, default=None)
-    parser.add_argument("--methods", default="ccd_hls_gen_v2,hls_eval_zero_shot")
+    parser.add_argument("--methods", default="ccd_hls_loop")
     parser.add_argument("--hls-backend", choices=["hls_eval", "vitis", "command", "mock"], default="vitis")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--case-filter", default=None, help="Regex matched against case path/name.")
     parser.add_argument("--samples", type=int, default=1)
     parser.add_argument("--prompt-budget", type=int, default=6000)
     parser.add_argument("--max-llm-calls", type=int, default=5)
+    parser.add_argument("--llm-call-budget", type=int, default=None, help="LLM call budget. Defaults to --max-llm-calls.")
+    parser.add_argument("--csim-budget", type=int, default=None, help="Maximum CSIM calls per case. Omit for unlimited.")
+    parser.add_argument("--synth-budget", type=int, default=None, help="Maximum SYNTH calls per case. Omit for unlimited.")
+    parser.add_argument("--cosim-budget", type=int, default=0, help="Maximum COSIM calls per case. Default 0 because COSIM is not in M1-M3 loop.")
+    parser.add_argument("--unified-credit-budget", type=int, default=None, help="Optional unified budget consumed by every LLM/tool call.")
+    parser.add_argument("--skill-token-budget", type=int, default=600)
     parser.add_argument("--repair-log-token-budget", type=int, default=1200)
     parser.add_argument(
         "--early-stop-similarity-threshold",
@@ -1076,13 +1215,12 @@ async def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    load_env_file(args.env_file)
     hls_eval_root = args.hls_eval_root.expanduser().resolve()
     data_dir = (args.data_dir or hls_eval_root / "hls_eval_data").expanduser().resolve()
     model_data = normalize_model_config(json.loads(args.model_config.read_text(encoding="utf-8")))
     model = ModelConfig.model_validate(model_data)
-    if not args.dry_run and model.provider_type == "cloud_openai" and model.api_key_env and not os.environ.get(model.api_key_env):
-        raise SystemExit(f"Missing API key env {model.api_key_env}. Fill .env or export it first.")
+    if not args.dry_run and model.provider_type == "cloud_openai" and not (model.api_key or (model.api_key_env and os.environ.get(model.api_key_env))):
+        raise SystemExit("Missing model API key. Use a local model config with api_key or export the configured api_key_env.")
 
     cases = discover_cases(data_dir)
     if args.case_filter:
@@ -1091,6 +1229,14 @@ async def main() -> None:
     if args.limit:
         cases = cases[: args.limit]
     methods = [m.strip() for m in args.methods.split(",") if m.strip()]
+    reserved = {"hls_eval_zero_shot", "hls_eval_agentic"}
+    requested_reserved = sorted(reserved.intersection(methods))
+    if requested_reserved:
+        raise SystemExit(
+            "These HLS-Eval baselines are reserved for the original upstream runners, not this CCD-HLS runner: "
+            f"{', '.join(requested_reserved)}. Use external/hls-eval/hls_eval_experiments/hls_gen_zero_shot__main/exp.py "
+            "or external/hls-eval/hls_eval_experiments/hls_gen_agent_miniswe/exp.py."
+        )
     pass_ks = [int(k.strip()) for k in args.pass_k.split(",") if k.strip()]
     experiment_id = new_id("exp")
     out_dir = (args.out_dir or Path("experiments") / experiment_id).resolve()
@@ -1107,6 +1253,12 @@ async def main() -> None:
         "hls_backend": args.hls_backend,
         "prompt_budget": args.prompt_budget,
         "max_llm_calls": args.max_llm_calls,
+        "llm_call_budget": args.llm_call_budget if args.llm_call_budget is not None else args.max_llm_calls,
+        "csim_budget": args.csim_budget,
+        "synth_budget": args.synth_budget,
+        "cosim_budget": args.cosim_budget,
+        "unified_credit_budget": args.unified_credit_budget,
+        "skill_token_budget": args.skill_token_budget,
         "repair_log_token_budget": args.repair_log_token_budget,
         "early_stop_similarity_threshold": args.early_stop_similarity_threshold,
         "model": public_model_dump(model),
@@ -1151,16 +1303,12 @@ async def main() -> None:
                         args.repair_log_token_budget,
                         args.early_stop_similarity_threshold,
                         method,
-                    )
-                elif method == "hls_eval_zero_shot":
-                    result = await run_zero_shot_case(
-                        experiment_id,
-                        case,
-                        workdir,
-                        model,
-                        args.hls_backend,
-                        hls_eval_root,
-                        sample_idx,
+                        args.llm_call_budget,
+                        args.csim_budget,
+                        args.synth_budget,
+                        args.cosim_budget,
+                        args.unified_credit_budget,
+                        args.skill_token_budget,
                     )
                 else:
                     raise ValueError(f"Unknown method: {method}")

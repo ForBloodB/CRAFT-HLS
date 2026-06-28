@@ -1,0 +1,12 @@
+{
+  "skill_id": "hls_static_bounds",
+  "title": "Prefer synthesizable static bounds",
+  "route": "Use for dynamic allocation, variable-length arrays, unknown loop bounds, unsupported system calls, or synthesis legality errors.",
+  "summary": "Vitis HLS prefers static array sizes, bounded loops, fixed-width types, and no dynamic memory allocation in the kernel.",
+  "applicability": ["synthesis error", "dynamic allocation", "variable loop bound"],
+  "anti_patterns": ["do not introduce malloc/new", "do not add unbounded while loops"],
+  "expected_effect": {"synthesizability": "improves", "resource": "predictable"},
+  "risk": "Overly conservative bounds can increase resources.",
+  "source_uri": "references/papers/scalehls_2021_ye_hao_chen.pdf",
+  "token_estimate": 58
+}

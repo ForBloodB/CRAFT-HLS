@@ -1,0 +1,12 @@
+{
+  "skill_id": "hls_dataflow_fifo",
+  "title": "Dataflow FIFO sizing and deadlock guard",
+  "route": "Use for hls::stream, DATAFLOW, FIFO depth warnings, stalls, or deadlock/cosim issues.",
+  "summary": "For dataflow designs, FIFO depth trades memory for stall/deadlock avoidance; size streams according to producer-consumer imbalance and data-dependent control.",
+  "applicability": ["streaming", "FIFO depth", "deadlock", "dataflow"],
+  "anti_patterns": ["do not add DATAFLOW before correctness", "do not oversize every FIFO blindly"],
+  "expected_effect": {"deadlock": "down", "BRAM": "may increase"},
+  "risk": "Incorrect stream protocol changes can break functional behavior.",
+  "source_uri": "references/papers/fifoadvisor_2025_abikaram_sarkar_basalama_cong_hao.pdf",
+  "token_estimate": 72
+}

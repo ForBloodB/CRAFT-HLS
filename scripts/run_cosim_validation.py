@@ -17,8 +17,8 @@ from ccd_hls_agent.utils import read_text, utc_now, write_text
 
 SOURCE_EXTENSIONS = {".c", ".cc", ".cpp", ".h", ".hh", ".hpp"}
 DEFAULT_RUNS = {
-    "hls_eval_zero_shot": Path("experiments/full/full_deepseek_v4_flash_vitis_20260531_final"),
-    "hls_eval_agentic": Path("experiments/full/hls_eval_agentic_deepseek_94x1_20260531"),
+    "hls_eval_zero_shot_historical_adapter": Path("experiments/full/full_deepseek_v4_flash_vitis_20260531_final"),
+    "hls_eval_agentic_deepseek_direct": Path("experiments/full/hls_eval_agentic_deepseek_94x1_20260531"),
     "ccd_hls_v2": Path("experiments/full/full_ccd_hls_gen_v2_deepseek_20260531"),
     "ccd_hls_loop": Path("experiments/full/full_ccd_hls_gen_v2_repair_deepseek_20260531_163049"),
 }

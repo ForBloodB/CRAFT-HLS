@@ -11,6 +11,9 @@ Only generate the design implementation for `$kernel_name`. Do not modify the he
 ## CCD Context Capsule
 $ccd_context
 
+## HLS Skill Capsule
+$hls_skill_capsule
+
 ## Output Format
 Return only this XML block and nothing else:
 <OUTPUT_CODE name="$kernel_name">

@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-"""Compatibility wrapper for the canonical HLS-agent CLI/TUI."""
-
 from ccd_hls_agent.agent_tui import main
 
 

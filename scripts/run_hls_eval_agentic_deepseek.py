@@ -24,7 +24,6 @@ from run_hls_eval_benchmark import (
     find_header,
     find_kernel_cpp,
     find_tb,
-    load_env_file,
     normalize_model_config,
     parse_tags,
     public_model_dump,
@@ -484,7 +483,6 @@ async def main() -> None:
     parser.add_argument("--hls-eval-root", type=Path, default=Path("external/hls-eval"))
     parser.add_argument("--data-dir", type=Path, default=None)
     parser.add_argument("--model-config", type=Path, default=Path("configs/deepseek_v4_flash.json"))
-    parser.add_argument("--env-file", type=Path, default=Path(".env"))
     parser.add_argument("--out-dir", type=Path, default=None)
     parser.add_argument("--hls-backend", choices=["hls_eval", "vitis", "command", "mock"], default="vitis")
     parser.add_argument("--limit", type=int, default=None)
@@ -501,15 +499,14 @@ async def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    load_env_file(args.env_file)
     hls_eval_root = args.hls_eval_root.expanduser().resolve()
     data_dir = (args.data_dir or hls_eval_root / "hls_eval_data").expanduser().resolve()
     model_data = normalize_model_config(json.loads(args.model_config.read_text(encoding="utf-8")))
     model = ModelConfig.model_validate(model_data)
     model.max_tokens = max(model.max_tokens, args.model_max_tokens)
     model.timeout = max(model.timeout, args.model_timeout)
-    if model.provider_type == "cloud_openai" and model.api_key_env and not os.environ.get(model.api_key_env):
-        raise SystemExit(f"Missing API key env {model.api_key_env}. Fill .env or export it first.")
+    if model.provider_type == "cloud_openai" and not (model.api_key or (model.api_key_env and os.environ.get(model.api_key_env))):
+        raise SystemExit("Missing model API key. Use a local model config with api_key or export the configured api_key_env.")
 
     cases = discover_cases(data_dir)
     if args.case_filter:

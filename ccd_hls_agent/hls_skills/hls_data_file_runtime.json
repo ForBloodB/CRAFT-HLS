@@ -1,0 +1,12 @@
+{
+  "skill_id": "hls_data_file_runtime",
+  "title": "Handle testbench runtime data files",
+  "route": "Use when CSIM says it could not open an input data file or the runtime exits before checking results.",
+  "summary": "Do not hard-code missing files into the kernel. Preserve the expected file-driven testbench behavior and keep generated kernel code deterministic.",
+  "applicability": ["runtime_data_file_missing", "CSIM file open failure", "testbench abort"],
+  "anti_patterns": ["do not modify testbench", "do not replace file I/O in the testbench"],
+  "expected_effect": {"correctness": "guards", "ppa": "neutral"},
+  "risk": "Usually indicates runner/runtime setup rather than kernel logic.",
+  "source_uri": "experiments/full/full_ccd_hls_gen_v2_repair_deepseek_20260531_163049",
+  "token_estimate": 56
+}

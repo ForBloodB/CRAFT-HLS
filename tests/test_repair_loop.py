@@ -205,3 +205,123 @@ def test_csim_failure_with_exhausted_llm_budget_skips_synth(tmp_path: Path, monk
     assert result.metrics["stopped_reason"] == "max_llm_calls_exhausted_after_csim_failure"
     assert result.metrics["llm_calls_used"] == 1
     assert result.metrics["failure_capsules"]
+
+
+def test_run_writes_budget_token_and_skill_artifacts(tmp_path: Path, monkeypatch):
+    case = make_generation_case(tmp_path)
+    client = FakeClient()
+
+    async def fake_csim_stage(*args, **kwargs):
+        tool = ToolResult(
+            status="completed",
+            return_code=0,
+            stdout="passed\n",
+            stderr="",
+            metrics={"can_compile": True, "can_pass_testbench": True},
+            command="fake_csim",
+            duration_ms=1,
+        )
+        return (
+            {"can_compile": True, "can_pass_testbench": True, "can_synthesize": False},
+            {"csim": tool.metrics, "csim_return_code": 0},
+            tool,
+        )
+
+    async def fake_synth_stage(*args, **kwargs):
+        tool = ToolResult(
+            status="completed",
+            return_code=0,
+            stdout="synth passed\n",
+            stderr="",
+            metrics={"can_synthesize": True},
+            command="fake_synth",
+            duration_ms=1,
+        )
+        return True, {"synth": tool.metrics, "synth_return_code": 0}, tool
+
+    monkeypatch.setattr(runner, "build_model_client", lambda model: client)
+    monkeypatch.setattr(runner, "run_csim_stage", fake_csim_stage)
+    monkeypatch.setattr(runner, "run_synth_stage", fake_synth_stage)
+    workdir = tmp_path / "run"
+
+    result = asyncio.run(
+        runner.run_ccd_gen_v2_case(
+            "exp_test",
+            case,
+            workdir,
+            ModelConfig(),
+            "mock",
+            None,
+            0,
+            6000,
+            2,
+            200,
+        )
+    )
+
+    assert result.can_synthesize
+    assert (workdir / "token_report.json").exists()
+    assert (workdir / "token_report.csv").exists()
+    assert (workdir / "budget_ledger.json").exists()
+    assert (workdir / "selected_skills.json").exists()
+    assert result.metrics["token_report"]["tokens_by_stage"]["GENERATION"] == 15
+    assert result.metrics["budget_summary"]["csim_calls"]["used"] == 1
+
+
+def test_csim_budget_zero_stops_before_tool_call(tmp_path: Path, monkeypatch):
+    case = make_generation_case(tmp_path)
+    client = FakeClient()
+
+    async def fail_if_csim_called(*args, **kwargs):
+        raise AssertionError("csim should not run when csim budget is zero")
+
+    monkeypatch.setattr(runner, "build_model_client", lambda model: client)
+    monkeypatch.setattr(runner, "run_csim_stage", fail_if_csim_called)
+
+    result = asyncio.run(
+        runner.run_ccd_gen_v2_case(
+            "exp_test",
+            case,
+            tmp_path / "run",
+            ModelConfig(),
+            "mock",
+            None,
+            0,
+            6000,
+            2,
+            200,
+            csim_budget=0,
+        )
+    )
+
+    assert result.metrics["stopped_reason"] == "budget_exhausted_csim"
+    assert result.metrics["budget_exhausted"] is True
+    assert result.tool_calls == 0
+
+
+def test_operator_memory_uses_token_report_cost():
+    result = runner.CaseResult(
+        experiment_id="exp_test",
+        method="ccd_hls_loop",
+        case_name="demo",
+        case_path="/tmp/family/demo",
+        sample_idx=0,
+        tags=[],
+        can_parse=False,
+        can_compile=False,
+        can_pass_testbench=False,
+        can_synthesize=False,
+        prompt_tokens=0,
+        completion_tokens=0,
+        total_tokens=0,
+        llm_duration_ms=1,
+        tool_calls=0,
+        wall_time_ms=1,
+        error="model failed",
+        metrics={"token_report": {"total_tokens": 123}, "stage_records": [], "terminal_stage": "GENERATION"},
+        artifacts_dir="/tmp/run",
+    )
+
+    rows = runner.build_operator_memory_rows([result])
+
+    assert rows[0]["token_cost"] == 123
