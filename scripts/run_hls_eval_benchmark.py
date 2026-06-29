@@ -28,6 +28,7 @@ from ccd_hls_agent.contracts import (
     build_hls_repair_prompt as render_hls_repair_prompt,
     build_output_code_repair_prompt as render_output_code_repair_prompt,
 )
+from ccd_hls_agent.deterministic_repair import apply_deterministic_repair
 from ccd_hls_agent.failure_analysis import (
     build_failure_capsule as make_failure_capsule,
     extract_error_windows as failure_error_windows,
@@ -38,6 +39,7 @@ from ccd_hls_agent.failure_analysis import (
 )
 from ccd_hls_agent.hls_backends import HLSBackendConfig, ToolResult, build_hls_backend, discover_tb_data_files
 from ccd_hls_agent.json_utils import make_json_safe
+from ccd_hls_agent.local_memory import HLSLocalMemory, error_signature_from_capsule, render_memory_capsule
 from ccd_hls_agent.model_clients import build_model_client
 from ccd_hls_agent.schemas import ModelConfig
 from ccd_hls_agent.skills import render_skill_capsule, route_skills
@@ -312,6 +314,7 @@ def build_hls_repair_prompt(
     attempt: int,
     max_llm_calls: int,
     hls_skill_capsule: str = "- No HLS skills selected.",
+    local_memory_capsule: str = "- No verified local memory matched this failure.",
 ) -> str:
     return render_hls_repair_prompt(
         stage=stage,
@@ -324,6 +327,7 @@ def build_hls_repair_prompt(
         attempt=attempt,
         max_llm_calls=max_llm_calls,
         hls_skill_capsule=hls_skill_capsule,
+        local_memory_capsule=local_memory_capsule,
     )
 
 
@@ -492,6 +496,9 @@ async def run_ccd_gen_v2_case(
     cosim_budget: int | None = 0,
     unified_credit_budget: int | None = None,
     skill_token_budget: int = 600,
+    enable_deterministic_repair: bool = True,
+    enable_local_memory: bool = True,
+    memory_path: Path | None = None,
 ) -> CaseResult:
     t0 = time.monotonic()
     files = prepare_generation_case(case_path, workdir / "design")
@@ -503,6 +510,7 @@ async def run_ccd_gen_v2_case(
         cosim_calls=cosim_budget,
         unified_credits=unified_credit_budget,
     )
+    local_memory = HLSLocalMemory(memory_path) if enable_local_memory else None
     zero_prompt = build_hls_eval_zero_shot_prompt(files["description"], files["tb"], files["header"], hls_eval_root)
     scan = scan_benchmark(workdir / "design")
     frontier = choose_frontier(scan, scan.blocker)
@@ -544,6 +552,7 @@ async def run_ccd_gen_v2_case(
     flags = {"can_compile": False, "can_pass_testbench": False, "can_synthesize": False}
     stage_records: list[dict[str, Any]] = []
     failure_capsules: list[dict[str, Any]] = []
+    pending_memory_updates: list[dict[str, Any]] = []
     metrics: dict[str, Any] = {
         "output_contract": "output_code_xml",
         "parse_mode": None,
@@ -577,6 +586,14 @@ async def run_ccd_gen_v2_case(
         "selected_skills": [skill.skill_id for skill in selected_skills],
         "selected_skill_tokens": sum(skill.token_estimate for skill in selected_skills),
         "dropped_skills": len(dropped_skills),
+        "deterministic_repair_enabled": enable_deterministic_repair,
+        "deterministic_repair_attempts": 0,
+        "deterministic_repair_applied": 0,
+        "local_memory_enabled": enable_local_memory,
+        "local_memory_path": str(memory_path) if memory_path else None,
+        "local_memory_hits": 0,
+        "local_memory_positive_updates": 0,
+        "local_memory_negative_updates": 0,
         "max_prompt_tokens": max_prompt_tokens,
         "zero_shot_prompt_tokens_est": estimate_tokens(zero_prompt),
         "frontier": frontier,
@@ -587,6 +604,102 @@ async def run_ccd_gen_v2_case(
         metrics["stopped_reason"] = reason
         metrics["stage_status"] = "FAILED" if stage != "DONE" else "DONE"
         metrics["budget_exhausted"] = reason.startswith("budget_exhausted") or (llm_calls_used >= max_llm_calls and stage != "DONE")
+
+    def case_family() -> str:
+        return case_path.parent.name
+
+    def top_signature() -> str:
+        top = read_text(workdir / "design" / "top.txt").strip()
+        header_text = read_text(files["header"])
+        match = re.search(rf"(?m)^\s*[^;{{}}]*\b{re.escape(top)}\s*\([^;{{}}]*\)\s*;", header_text) if top else None
+        return " ".join(match.group(0).split()) if match else ""
+
+    def memory_hits_for(capsule: dict[str, Any]) -> tuple[str, list[Any]]:
+        if local_memory is None:
+            return "- Local memory disabled.", []
+        signature = error_signature_from_capsule(capsule)
+        hits = local_memory.search(
+            case_family=case_family(),
+            failure_class=str(capsule.get("failure_class") or ""),
+            error_signature=signature,
+        )
+        metrics["local_memory_hits"] = int(metrics.get("local_memory_hits") or 0) + len(hits)
+        return render_memory_capsule(hits), hits
+
+    def update_memory(
+        *,
+        capsule: dict[str, Any],
+        attempted_fix: str,
+        before: dict[str, Any],
+        after: dict[str, Any] | None,
+        verified: bool,
+    ) -> None:
+        if local_memory is None:
+            return
+        local_memory.add_event(
+            case_name=case_path.name,
+            case_family=case_family(),
+            top_signature=top_signature(),
+            failure_class=str(capsule.get("failure_class") or capsule.get("failure_type") or ""),
+            error_signature=error_signature_from_capsule(capsule),
+            attempted_fix=attempted_fix,
+            tool_result_before=before,
+            tool_result_after=after,
+            verified=verified,
+            artifact_uri=str(workdir),
+        )
+        key = "local_memory_positive_updates" if verified else "local_memory_negative_updates"
+        metrics[key] = int(metrics.get(key) or 0) + 1
+
+    def remember_pending(capsule: dict[str, Any], attempted_fix: str, before: dict[str, Any]) -> None:
+        pending_memory_updates.append({"capsule": capsule, "attempted_fix": attempted_fix, "before": before})
+
+    def verify_pending(after: dict[str, Any], *, success: bool) -> None:
+        if not pending_memory_updates:
+            return
+        pending = pending_memory_updates.pop()
+        update_memory(
+            capsule=pending["capsule"],
+            attempted_fix=pending["attempted_fix"],
+            before=pending["before"],
+            after=after,
+            verified=success,
+        )
+
+    def deterministic_repair_for(capsule: dict[str, Any], *, build_dir: Path | None = None) -> bool:
+        if not enable_deterministic_repair:
+            return False
+        metrics["deterministic_repair_attempts"] = int(metrics.get("deterministic_repair_attempts") or 0) + 1
+        repair = apply_deterministic_repair(
+            case_dir=workdir / "design",
+            kernel=files["kernel"],
+            header=files["header"],
+            tb=files["tb"],
+            failure_capsule=capsule,
+            build_dir=build_dir,
+        )
+        if repair.applied:
+            metrics["deterministic_repair_applied"] = int(metrics.get("deterministic_repair_applied") or 0) + 1
+            add_stage_record(
+                stage_records,
+                stage="DETERMINISTIC_REPAIR",
+                status="completed",
+                message=repair.message,
+                metrics={
+                    "repair_type": repair.repair_type,
+                    "failure_class": capsule.get("failure_class"),
+                },
+                artifacts={"code_snapshot": snapshot_kernel(files["kernel"], workdir, f"deterministic_repair_{metrics['deterministic_repair_attempts']}")},
+            )
+            return True
+        add_stage_record(
+            stage_records,
+            stage="DETERMINISTIC_REPAIR",
+            status="skipped",
+            message=repair.message,
+            metrics={"repair_type": repair.repair_type, "failure_class": capsule.get("failure_class")},
+        )
+        return False
 
     async def call_llm(stage: str, prompt_text: str, system_prompt: str, *, label: str):
         nonlocal selected_skills
@@ -786,6 +899,7 @@ async def run_ccd_gen_v2_case(
                 {"flags": csim_flags, "metrics": csim_metrics, "return_code": csim_result.return_code, "command": csim_result.command},
             )
             if csim_flags["can_compile"] and csim_flags["can_pass_testbench"]:
+                verify_pending({"stage": "CSIM", **csim_flags}, success=True)
                 add_stage_record(
                     stage_records,
                     stage="CSIM",
@@ -808,8 +922,10 @@ async def run_ccd_gen_v2_case(
                     token_budget=skill_token_budget,
                 )
                 skill_capsule = render_skill_capsule(selected_skills)
+                local_memory_capsule, memory_hits = memory_hits_for(capsule)
                 write_text(workdir / "selected_skills.json", json_dumps([skill.model_dump() for skill in selected_skills]))
                 write_text(workdir / "dropped_skills.json", json_dumps([skill.model_dump() for skill in dropped_skills]))
+                write_text(workdir / "local_memory_hits.json", json_dumps([getattr(hit, "__dict__", str(hit)) for hit in memory_hits]))
                 add_stage_record(
                     stage_records,
                     stage="CSIM",
@@ -824,6 +940,13 @@ async def run_ccd_gen_v2_case(
                     },
                     artifacts={"hls_result": hls_artifact, "failure_capsule": capsule_path},
                 )
+                if deterministic_repair_for(capsule, build_dir=csim_build):
+                    remember_pending(
+                        capsule,
+                        "deterministic_repair:" + str(capsule.get("recommended_policy") or capsule.get("failure_class") or ""),
+                        {"stage": "CSIM", **csim_flags},
+                    )
+                    continue
                 should_stop, similarity = repeated_failure_early_stop(
                     failure_capsules,
                     threshold=early_stop_similarity_threshold,
@@ -861,6 +984,7 @@ async def run_ccd_gen_v2_case(
                     attempt=metrics["repair_rounds"],
                     max_llm_calls=max_llm_calls,
                     hls_skill_capsule=skill_capsule,
+                    local_memory_capsule=local_memory_capsule,
                 )
                 repair_result = await call_llm(
                     "CSIM_REPAIR",
@@ -873,8 +997,16 @@ async def run_ccd_gen_v2_case(
                     break
                 parsed, _ = await parse_model_output("PARSE_VALIDATE", repair_result.content, label=f"csim_repair_attempt_{validation_attempt}")
                 if not parsed:
+                    update_memory(
+                        capsule=capsule,
+                        attempted_fix="llm_csim_repair_parse_failed",
+                        before={"stage": "CSIM", **csim_flags},
+                        after={"parse_failed": True},
+                        verified=False,
+                    )
                     set_terminal("PARSE_VALIDATE", metrics.get("fallback_reason") or "repair_output_parse_failed")
                     break
+                remember_pending(capsule, "llm_csim_repair", {"stage": "CSIM", **csim_flags})
                 continue
 
             metrics["stage_status"] = "SYNTH"
@@ -912,6 +1044,7 @@ async def run_ccd_gen_v2_case(
                 {"can_synthesize": can_synth, "metrics": synth_metrics, "return_code": synth_result.return_code, "command": synth_result.command},
             )
             if can_synth:
+                verify_pending({"stage": "SYNTH", "can_synthesize": True}, success=True)
                 add_stage_record(
                     stage_records,
                     stage="SYNTH",
@@ -935,8 +1068,10 @@ async def run_ccd_gen_v2_case(
                 token_budget=skill_token_budget,
             )
             skill_capsule = render_skill_capsule(selected_skills)
+            local_memory_capsule, memory_hits = memory_hits_for(capsule)
             write_text(workdir / "selected_skills.json", json_dumps([skill.model_dump() for skill in selected_skills]))
             write_text(workdir / "dropped_skills.json", json_dumps([skill.model_dump() for skill in dropped_skills]))
+            write_text(workdir / "local_memory_hits.json", json_dumps([getattr(hit, "__dict__", str(hit)) for hit in memory_hits]))
             add_stage_record(
                 stage_records,
                 stage="SYNTH",
@@ -951,6 +1086,14 @@ async def run_ccd_gen_v2_case(
                 },
                 artifacts={"hls_result": synth_artifact, "failure_capsule": capsule_path},
             )
+            if deterministic_repair_for(capsule, build_dir=synth_build):
+                remember_pending(
+                    capsule,
+                    "deterministic_repair:" + str(capsule.get("recommended_policy") or capsule.get("failure_class") or ""),
+                    {"stage": "SYNTH", "can_synthesize": False},
+                )
+                flags = {"can_compile": False, "can_pass_testbench": False, "can_synthesize": False}
+                continue
             should_stop, similarity = repeated_failure_early_stop(
                 failure_capsules,
                 threshold=early_stop_similarity_threshold,
@@ -988,6 +1131,7 @@ async def run_ccd_gen_v2_case(
                 attempt=metrics["repair_rounds"],
                 max_llm_calls=max_llm_calls,
                 hls_skill_capsule=skill_capsule,
+                local_memory_capsule=local_memory_capsule,
             )
             repair_result = await call_llm(
                 "SYNTH_REPAIR",
@@ -1000,13 +1144,30 @@ async def run_ccd_gen_v2_case(
                 break
             parsed, _ = await parse_model_output("PARSE_VALIDATE", repair_result.content, label=f"synth_repair_attempt_{validation_attempt}")
             if not parsed:
+                update_memory(
+                    capsule=capsule,
+                    attempted_fix="llm_synth_repair_parse_failed",
+                    before={"stage": "SYNTH", "can_synthesize": False},
+                    after={"parse_failed": True},
+                    verified=False,
+                )
                 set_terminal("PARSE_VALIDATE", metrics.get("fallback_reason") or "repair_output_parse_failed")
                 break
+            remember_pending(capsule, "llm_synth_repair", {"stage": "SYNTH", "can_synthesize": False})
             # Any code change after synth repair must be revalidated with CSIM first.
             flags = {"can_compile": False, "can_pass_testbench": False, "can_synthesize": False}
             continue
 
         if metrics["terminal_stage"] != "DONE":
+            if pending_memory_updates:
+                pending = pending_memory_updates.pop()
+                update_memory(
+                    capsule=pending["capsule"],
+                    attempted_fix=pending["attempted_fix"],
+                    before=pending["before"],
+                    after={"terminal_stage": metrics.get("terminal_stage"), "stopped_reason": metrics.get("stopped_reason")},
+                    verified=False,
+                )
             error = metrics.get("stopped_reason") or "repair_loop_failed"
     except Exception as exc:
         error = error or str(exc)
@@ -1204,6 +1365,9 @@ async def main() -> None:
     parser.add_argument("--unified-credit-budget", type=int, default=None, help="Optional unified budget consumed by every LLM/tool call.")
     parser.add_argument("--skill-token-budget", type=int, default=600)
     parser.add_argument("--repair-log-token-budget", type=int, default=1200)
+    parser.add_argument("--disable-deterministic-repair", action="store_true", help="Disable local rule-based repair before LLM repair.")
+    parser.add_argument("--disable-local-memory", action="store_true", help="Disable local SQLite HLS memory retrieval/update.")
+    parser.add_argument("--memory-path", type=Path, default=None, help="SQLite memory path. Defaults to .hls_agent/memory/hls_memory.sqlite.")
     parser.add_argument(
         "--early-stop-similarity-threshold",
         type=float,
@@ -1261,6 +1425,9 @@ async def main() -> None:
         "skill_token_budget": args.skill_token_budget,
         "repair_log_token_budget": args.repair_log_token_budget,
         "early_stop_similarity_threshold": args.early_stop_similarity_threshold,
+        "deterministic_repair_enabled": not args.disable_deterministic_repair,
+        "local_memory_enabled": not args.disable_local_memory,
+        "memory_path": str(args.memory_path) if args.memory_path else None,
         "model": public_model_dump(model),
     }
     write_text(out_dir / "manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
@@ -1309,6 +1476,9 @@ async def main() -> None:
                         args.cosim_budget,
                         args.unified_credit_budget,
                         args.skill_token_budget,
+                        not args.disable_deterministic_repair,
+                        not args.disable_local_memory,
+                        args.memory_path,
                     )
                 else:
                     raise ValueError(f"Unknown method: {method}")

@@ -23,6 +23,9 @@ $failure_history_json
 ## HLS Skill Capsule
 $hls_skill_capsule
 
+## Local Verified Memory Capsule
+$local_memory_capsule
+
 ## Task Description
 $description_input
 

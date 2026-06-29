@@ -37,6 +37,7 @@ CRAFT-HLS 面向 FPT 2026 / HLS-Eval Track A，目标是构建一个可复现的
 - `HLS-agent` 作为确定性后端，负责运行 HLS-Eval case、调用模型、调用 HLS backend、保存 artifacts。
 - CCD-HLS v2 / LOOP 作为内部生成与修复方法，支持有界 repair loop。
 - M1-M3 已接入 stage-level token report、BudgetLedger、task mode、HLS skill router。
+- 完全本地增强路径已接入 failure taxonomy、deterministic repair、本地 SQLite memory 和 tool-verified memory 更新。
 - 默认目标平台按 KV260 组织合同字段；真实工具链仍由本机 Vitis/HLS-Eval 环境决定。
 
 ## 2. 目录结构
@@ -220,7 +221,79 @@ HLS-agent recent
 HLS-agent view <run_dir> --snapshot
 ```
 
-## 7. 完整复现：真实 DeepSeek + Vitis
+## 7. 完全本地知识增强模式
+
+完全本地模式不依赖 DeepSeek 或其他云 API。推荐组合是：
+
+```text
+本地 Qwen3/Qwen2.5
++ failure taxonomy
++ failure-conditioned skill router
++ deterministic repair
++ local SQLite memory
++ Vitis CSIM/SYNTH verification
+```
+
+默认开关：
+
+```text
+early-stop threshold: 0.92
+deterministic repair: enabled
+local memory: enabled
+memory path: .hls_agent/memory/hls_memory.sqlite
+skill token budget: 600
+```
+
+本地 Qwen3 运行示例：
+
+```bash
+HLS-agent run \
+  --case-path external/hls-eval/hls_eval_data/c2hlsc/add_round_key \
+  --hls-eval-root external/hls-eval \
+  --data-dir external/hls-eval/hls_eval_data \
+  --model-config configs/qwen3_coder_30b.local.json \
+  --hls-backend vitis \
+  --max-llm-calls 5 \
+  --early-stop-similarity-threshold 0.92 \
+  --skill-token-budget 600 \
+  --repair-log-token-budget 1200 \
+  --memory-path .hls_agent/memory/hls_memory.sqlite \
+  --no-view \
+  --snapshot
+```
+
+消融实验可以关闭模块：
+
+```bash
+--disable-deterministic-repair
+--disable-local-memory
+--early-stop-similarity-threshold 0
+```
+
+新增 artifacts / metrics：
+
+```text
+failure_class
+root_cause_hints
+recommended_policy
+local_memory_hits.json
+DETERMINISTIC_REPAIR stage records
+local_memory_positive_updates
+local_memory_negative_updates
+```
+
+知识闭环：
+
+```text
+静态分析 + failure classifier
+-> 检索 K0-K4 本地知识/memory
+-> 注入短 Knowledge Capsule
+-> deterministic repair 或 Qwen3 repair
+-> Vitis 验证
+-> positive/negative memory 更新
+```
+
+## 8. 完整复现：真实 DeepSeek + Vitis
 
 完整复现需要：
 
@@ -271,7 +344,7 @@ workflow_events.jsonl   阶段事件流
 failure_capsules.json   压缩后的失败证据
 ```
 
-## 8. Roo Code 使用方式
+## 9. Roo Code 使用方式
 
 在 Roo Code 中选择项目 custom mode：
 
@@ -322,7 +395,7 @@ contract_meta.json
 - 是否解决了这个问题。
 - 依据是什么：CSIM、SYNTH、COSIM、hidden test、tool log 或 resource report。
 
-## 9. 合同锁定后运行
+## 10. 合同锁定后运行
 
 如果合同已经完整，可以手动锁定：
 
@@ -342,7 +415,7 @@ HLS-agent contract run workspaces/contracts/add_round_key_demo \
 
 如果锁定后修改了合同文件，`contract run` 会拒绝执行。需要重新 review 和 lock。
 
-## 10. 批量 benchmark
+## 11. 批量 benchmark
 
 直接调用 runner：
 
@@ -372,9 +445,13 @@ python scripts/run_hls_eval_benchmark.py \
 --cosim-budget
 --skill-token-budget
 --repair-log-token-budget
+--early-stop-similarity-threshold
+--disable-deterministic-repair
+--disable-local-memory
+--memory-path
 ```
 
-## 11. 论文实验应该汇报什么
+## 12. 论文实验应该汇报什么
 
 建议至少汇报：
 
@@ -389,6 +466,10 @@ python scripts/run_hls_eval_benchmark.py \
 - `tokens_per_synth_success`
 - `budget_summary`
 - `selected_skills`
+- `failure_class` 分布
+- `memory hit rate`
+- `positive memory reuse count`
+- `failure class recovery rate`
 
 推荐对比：
 
@@ -398,9 +479,10 @@ HLS-Eval agentic baseline
 CCD-HLS v2
 CCD-HLS LOOP
 CRAFT-HLS with contract + skill + budget + token report
+CRAFT-HLS Local with deterministic repair + verified memory
 ```
 
-## 12. 开发与提交前检查
+## 13. 开发与提交前检查
 
 提交前运行：
 
@@ -425,7 +507,7 @@ references/papers/*.pdf
 references/web/*.html
 ```
 
-## 13. 当前命名约定
+## 14. 当前命名约定
 
 - 项目/论文名：`CRAFT-HLS`
 - 未来论文题目：`CRAFT-HLS: Contract-Refined Agentic Flow for Token-Efficient HLS Generation and Repair`

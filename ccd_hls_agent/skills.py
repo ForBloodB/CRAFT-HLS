@@ -94,33 +94,61 @@ def route_skills(
         latest_metrics=latest_metrics,
         selected_atoms=selected_atoms,
     )
-    mode = str(task_mode)
+    mode = task_mode.value if isinstance(task_mode, TaskMode) else str(task_mode)
+    failure_class = str((failure_capsule or {}).get("failure_class") or "")
+    failure_type = str((failure_capsule or {}).get("failure_type") or "")
     scored: list[tuple[float, HLSSkill]] = []
     for skill in all_skills:
         score = 0.0
         sid = skill.skill_id
-        if sid == "hls_signature_repair" and re.search(r"not declared|no matching|undefined reference|undefined symbol|signature", text):
+        if sid == "hls_signature_repair" and (
+            failure_class == "signature_or_top_mismatch"
+            or re.search(r"not declared|no matching|undefined reference|undefined symbol|signature|top function", text)
+        ):
             score += 10
-        if sid == "hls_data_file_runtime" and re.search(r"couldn.t open|input data file|runtime_data_file_missing", text):
+        if sid == "hls_data_file_runtime" and (
+            failure_class == "data_file_runtime_error"
+            or failure_type == "runtime_data_file_missing"
+            or re.search(r"couldn.t open|input data file|runtime_data_file_missing", text)
+        ):
             score += 10
-        if sid == "hls_static_bounds" and re.search(r"variable length|dynamic|malloc|new |unknown loop|static", text):
+        if sid == "hls_static_bounds" and (
+            failure_class in {"array_dimension_type_error", "missing_include_or_type"}
+            or re.search(r"variable length|dynamic|malloc|new |unknown loop|static|array_dimension", text)
+        ):
             score += 8
-        if sid == "hls_loop_pipeline_unroll" and re.search(r"loop|pipeline|unroll|latency|ii", text):
+        if sid == "hls_loop_pipeline_unroll" and (
+            failure_class == "synth_resource_or_loop_error"
+            or mode in {TaskMode.REPAIR_SYNTH.value, TaskMode.OPTIMIZE_PPA.value}
+            or re.search(r"loop|pipeline|unroll|latency|ii", text)
+        ):
             score += 5
-        if sid == "hls_array_partition" and re.search(r"memory port|array|partition|bram|ram|load/load", text):
+        if sid == "hls_array_partition" and (
+            failure_class in {"array_dimension_type_error", "synth_resource_or_loop_error"}
+            or mode in {TaskMode.REPAIR_SYNTH.value, TaskMode.OPTIMIZE_PPA.value}
+            or re.search(r"memory port|array partition|bram|ram|load/load", text)
+        ):
             score += 7
-        if sid == "hls_dataflow_fifo" and re.search(r"fifo|stream|dataflow|deadlock|stall", text):
+        if sid == "hls_dataflow_fifo" and (
+            failure_class == "dataflow_deadlock_or_fifo"
+            or re.search(r"fifo|stream|dataflow|deadlock|stall", text)
+        ):
             score += 9
-        if sid == "prometheus_tiling_fusion" and re.search(r"tiling|fusion|permutation|communication|memory", text):
+        if sid == "prometheus_tiling_fusion" and (
+            mode == TaskMode.OPTIMIZE_PPA.value or re.search(r"tiling|fusion|permutation|communication", text)
+        ):
             score += 5
-        if sid == "autodse_bottleneck" and re.search(r"bottleneck|qor|resource|latency|dse", text):
+        if sid == "autodse_bottleneck" and (
+            mode == TaskMode.OPTIMIZE_PPA.value or re.search(r"bottleneck|qor|resource|latency|dse", text)
+        ):
             score += 5
         if sid == "variable_loop_bounds" and re.search(r"variable loop|runtime bound|while|loop bound", text):
             score += 6
         if sid == "llm4hls_directive_dse" and (mode == TaskMode.OPTIMIZE_PPA.value or re.search(r"directive|pragma|pareto|ppa", text)):
             score += 6
-        terms = set(re.findall(r"[a-z_][a-z0-9_]+", skill.route.lower() + " " + skill.summary.lower()))
-        score += min(3, len(terms & set(re.findall(r"[a-z_][a-z0-9_]+", text))) * 0.1)
+        if failure_capsule:
+            terms = set(re.findall(r"[a-z_][a-z0-9_]+", skill.route.lower() + " " + skill.summary.lower()))
+            score += min(1, len(terms & set(re.findall(r"[a-z_][a-z0-9_]+", text))) * 0.05)
         if score > 0:
             scored.append((score, skill))
     scored.sort(key=lambda item: (item[0], -item[1].token_estimate), reverse=True)

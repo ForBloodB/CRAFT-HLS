@@ -107,7 +107,21 @@ def test_parser_keeps_view_and_run_subcommands():
     parser = tui.build_parser()
 
     view = parser.parse_args(["view", "some/run", "--snapshot"])
-    run = parser.parse_args(["run", "--max-llm-calls", "3", "--llm-call-budget", "2", "--csim-budget", "0", "--no-view"])
+    run = parser.parse_args(
+        [
+            "run",
+            "--max-llm-calls",
+            "3",
+            "--llm-call-budget",
+            "2",
+            "--csim-budget",
+            "0",
+            "--early-stop-similarity-threshold",
+            "0.91",
+            "--disable-local-memory",
+            "--no-view",
+        ]
+    )
     recent = parser.parse_args(["recent", "--limit", "5", "--snapshot"])
     doctor = parser.parse_args(["doctor"])
     contract = parser.parse_args(["contract", "review", "some/contract"])
@@ -119,6 +133,8 @@ def test_parser_keeps_view_and_run_subcommands():
     assert run.max_llm_calls == 3
     assert run.llm_call_budget == 2
     assert run.csim_budget == 0
+    assert run.early_stop_similarity_threshold == 0.91
+    assert run.disable_local_memory is True
     assert recent.command == "recent"
     assert recent.limit == 5
     assert doctor.command == "doctor"

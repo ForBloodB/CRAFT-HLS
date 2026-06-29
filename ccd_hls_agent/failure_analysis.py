@@ -21,6 +21,21 @@ HIGH_PRIORITY_LOG_RE = re.compile(
 )
 
 
+FAILURE_CLASSES = {
+    "signature_or_top_mismatch",
+    "array_dimension_type_error",
+    "missing_include_or_type",
+    "data_file_runtime_error",
+    "functional_mismatch",
+    "numeric_tolerance_mismatch",
+    "synth_interface_error",
+    "synth_resource_or_loop_error",
+    "dataflow_deadlock_or_fifo",
+    "timeout",
+    "unknown_hls_failure",
+}
+
+
 def ensure_text(text: str | bytes | None) -> str:
     if text is None:
         return ""
@@ -70,12 +85,69 @@ def summarize_failure_history(capsules: list[dict[str, Any]], *, limit: int = 4)
             {
                 "stage": capsule.get("stage"),
                 "failure_type": capsule.get("failure_type"),
+                "failure_class": capsule.get("failure_class"),
+                "recommended_policy": capsule.get("recommended_policy"),
                 "return_code": capsule.get("return_code"),
                 "key_errors": capsule.get("key_errors", [])[:4],
                 "signal_lines": capsule.get("signal_lines", [])[:6],
             }
         )
     return history
+
+
+def classify_failure(stage: str, metrics: dict[str, Any], signal_lines: list[str], error_windows: list[str]) -> dict[str, Any]:
+    text = "\n".join([*signal_lines, *error_windows]).lower()
+    root_cause_hints: list[str] = []
+    failure_class = "unknown_hls_failure"
+    recommended_policy = "llm_repair_with_compact_failure_capsule"
+
+    timeout = any(bool(v) for k, v in metrics.items() if "timeout" in k)
+    if timeout:
+        failure_class = "timeout"
+        root_cause_hints.append("Tool execution timed out.")
+        recommended_policy = "reduce_design_complexity_or_retry_tool_once"
+    elif re.search(r"couldn.t open|input data file|no such file|failed to open", text):
+        failure_class = "data_file_runtime_error"
+        root_cause_hints.append("Testbench runtime data file is missing or not staged in the build directory.")
+        recommended_policy = "run_data_file_path_repair_before_llm"
+    elif re.search(r"uint\d+_t\[[0-9]+\]|unsigned char\[[0-9]+\]|invalid operands to binary expression.*\[[0-9]+\]|subscripted value is not an array|array type", text):
+        failure_class = "array_dimension_type_error"
+        root_cause_hints.append("Compiler reports array/scalar misuse or incompatible array dimensions.")
+        recommended_policy = "run_array_dimension_static_repair_then_llm_if_needed"
+    elif re.search(r"undefined reference|undefined symbol|not declared|no matching function|conflicting types|too few arguments|too many arguments", text):
+        failure_class = "signature_or_top_mismatch"
+        root_cause_hints.append("Top function, prototype, or call signature appears inconsistent.")
+        recommended_policy = "run_signature_alignment_before_llm"
+    elif re.search(r"fatal error:.*file not found|unknown type name|does not name a type|use of undeclared identifier", text):
+        failure_class = "missing_include_or_type"
+        root_cause_hints.append("Compilation failed because an include or type declaration is missing.")
+        recommended_policy = "run_include_type_repair_before_llm"
+    elif re.search(r"deadlock|fifo|stream|dataflow|stall", text):
+        failure_class = "dataflow_deadlock_or_fifo"
+        root_cause_hints.append("Tool log mentions dataflow, FIFO, stream, stall, or deadlock.")
+        recommended_policy = "route_dataflow_fifo_skill_and_consider_fifo_depth"
+    elif stage == "SYNTH" and re.search(r"interface|bundle|port|axis|ap_ctrl|unsupported", text):
+        failure_class = "synth_interface_error"
+        root_cause_hints.append("Synthesis failed around HLS interface or unsupported construct.")
+        recommended_policy = "route_synth_interface_repair"
+    elif stage == "SYNTH":
+        failure_class = "synth_resource_or_loop_error"
+        root_cause_hints.append("Synthesis failed after CSIM passed; likely resource, loop, or unsupported HLS structure issue.")
+        recommended_policy = "route_loop_array_partition_or_resource_skill"
+    elif metrics.get("can_compile") is True and re.search(r"mismatch|expected|actual|assert|fail|incorrect|wrong|tolerance|epsilon", text):
+        failure_class = "numeric_tolerance_mismatch" if re.search(r"tolerance|epsilon|float|double", text) else "functional_mismatch"
+        root_cause_hints.append("CSIM compiled but failed functional checks.")
+        recommended_policy = "build_testbench_behavior_capsule_and_repair_semantics"
+    elif metrics.get("can_compile") is True:
+        failure_class = "functional_mismatch"
+        root_cause_hints.append("CSIM compiled but testbench did not pass.")
+        recommended_policy = "build_testbench_behavior_capsule_and_repair_semantics"
+
+    return {
+        "failure_class": failure_class,
+        "root_cause_hints": root_cause_hints,
+        "recommended_policy": recommended_policy,
+    }
 
 
 def build_failure_capsule(stage: str, tool_result: Any, *, token_budget: int) -> dict[str, Any]:
@@ -85,6 +157,7 @@ def build_failure_capsule(stage: str, tool_result: Any, *, token_budget: int) ->
     log_text = stderr + "\n" + stdout
     signal_lines = extract_signal_lines(log_text)
     error_windows = extract_error_windows(log_text)
+    classification = classify_failure(stage, metrics, signal_lines, error_windows)
     timeout = any(bool(v) for k, v in metrics.items() if "timeout" in k)
     if timeout:
         failure_type = "timeout"
@@ -105,6 +178,7 @@ def build_failure_capsule(stage: str, tool_result: Any, *, token_budget: int) ->
     capsule = {
         "stage": stage,
         "failure_type": failure_type,
+        **classification,
         "return_code": getattr(tool_result, "return_code", None),
         "command": getattr(tool_result, "command", ""),
         "duration_ms": getattr(tool_result, "duration_ms", 0),
@@ -133,6 +207,8 @@ def _normalize_failure_text(lines: list[Any]) -> str:
 
 def failure_similarity(left: dict[str, Any], right: dict[str, Any]) -> float:
     if left.get("failure_type") != right.get("failure_type"):
+        return 0.0
+    if left.get("failure_class") and right.get("failure_class") and left.get("failure_class") != right.get("failure_class"):
         return 0.0
     left_text = _normalize_failure_text(left.get("key_errors") or left.get("signal_lines") or [])
     right_text = _normalize_failure_text(right.get("key_errors") or right.get("signal_lines") or [])

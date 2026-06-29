@@ -531,6 +531,8 @@ def run_benchmark(args: argparse.Namespace) -> Path:
         str(args.skill_token_budget),
         "--repair-log-token-budget",
         str(args.repair_log_token_budget),
+        "--early-stop-similarity-threshold",
+        str(args.early_stop_similarity_threshold),
         "--case-filter",
         re.escape(case_path.name) + "$",
         "--out-dir",
@@ -542,6 +544,12 @@ def run_benchmark(args: argparse.Namespace) -> Path:
         command.extend(["--synth-budget", str(args.synth_budget)])
     if args.unified_credit_budget is not None:
         command.extend(["--unified-credit-budget", str(args.unified_credit_budget)])
+    if getattr(args, "disable_deterministic_repair", False):
+        command.append("--disable-deterministic-repair")
+    if getattr(args, "disable_local_memory", False):
+        command.append("--disable-local-memory")
+    if getattr(args, "memory_path", None) is not None:
+        command.extend(["--memory-path", str(args.memory_path)])
     print("Running:", flush=True)
     print(" ".join(command), flush=True)
     print("", flush=True)
@@ -576,6 +584,10 @@ def run_contract_backend(args: argparse.Namespace) -> Path:
         unified_credit_budget=args.unified_credit_budget,
         skill_token_budget=args.skill_token_budget,
         repair_log_token_budget=args.repair_log_token_budget,
+        early_stop_similarity_threshold=args.early_stop_similarity_threshold,
+        disable_deterministic_repair=args.disable_deterministic_repair,
+        disable_local_memory=args.disable_local_memory,
+        memory_path=args.memory_path,
         out_dir=out_dir,
     )
     run_dir = run_benchmark(runner_args)
@@ -1115,6 +1127,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--unified-credit-budget", type=int, default=None)
     run.add_argument("--skill-token-budget", type=int, default=600)
     run.add_argument("--repair-log-token-budget", type=int, default=1200)
+    run.add_argument("--early-stop-similarity-threshold", type=float, default=0.92)
+    run.add_argument("--disable-deterministic-repair", action="store_true")
+    run.add_argument("--disable-local-memory", action="store_true")
+    run.add_argument("--memory-path", type=Path, default=None)
     run.add_argument("--out-dir", type=Path, default=None)
     run.add_argument("--no-view", action="store_true")
     run.add_argument("--snapshot", action="store_true", help="Print a summary after the run.")
@@ -1157,6 +1173,10 @@ def build_parser() -> argparse.ArgumentParser:
     run_contract.add_argument("--unified-credit-budget", type=int, default=None)
     run_contract.add_argument("--skill-token-budget", type=int, default=600)
     run_contract.add_argument("--repair-log-token-budget", type=int, default=1200)
+    run_contract.add_argument("--early-stop-similarity-threshold", type=float, default=0.92)
+    run_contract.add_argument("--disable-deterministic-repair", action="store_true")
+    run_contract.add_argument("--disable-local-memory", action="store_true")
+    run_contract.add_argument("--memory-path", type=Path, default=None)
     run_contract.add_argument("--out-dir", type=Path, default=None)
     run_contract.add_argument("--snapshot", action="store_true")
 

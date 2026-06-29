@@ -94,6 +94,7 @@ def build_hls_repair_prompt(
     attempt: int,
     max_llm_calls: int,
     hls_skill_capsule: str = "- No HLS skills selected.",
+    local_memory_capsule: str = "- No verified local memory matched this failure.",
     template_dir: Path | None = None,
 ) -> str:
     return render_contract_template(
@@ -106,6 +107,7 @@ def build_hls_repair_prompt(
         failure_capsule_json=json.dumps(failure_capsule, ensure_ascii=False, indent=2),
         failure_history_json=json.dumps(summarize_failure_history(failure_history), ensure_ascii=False, indent=2),
         hls_skill_capsule=hls_skill_capsule,
+        local_memory_capsule=local_memory_capsule,
         description_input=_input_code(description, token_budget=1200),
         header_input=_input_code(header, token_budget=1600),
         tb_input=_input_code(tb, token_budget=2200),
