@@ -141,6 +141,7 @@ cp configs/deepseek_v4_flash.json configs/deepseek_v4_flash.local.json
   "model": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
   "temperature": 0.2,
   "max_tokens": 4096,
+  "context_window": 16384,
   "timeout": 180.0
 }
 ```
@@ -242,7 +243,16 @@ deterministic repair: enabled
 local memory: enabled
 memory path: .hls_agent/memory/hls_memory.sqlite
 skill token budget: 600
+local model context window: 16384
 ```
+
+本地 llama.cpp server 建议以 16K context 启动：
+
+```bash
+CTX=16384 PARALLEL=1 bash external/local_model_scripts/start_llama_server.sh 30b
+```
+
+如果 prompt 估算长度仍超过 `context_window - max_tokens`，runner 会在调用模型前自动压缩 repair 信息；压缩优先减少 failure history、日志摘录、testbench/kernel 摘录和 memory capsule，而不是直接让 llama.cpp 返回 `context size` 错误。
 
 本地 Qwen3 运行示例：
 

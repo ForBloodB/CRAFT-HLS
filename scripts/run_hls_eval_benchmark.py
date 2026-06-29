@@ -45,7 +45,7 @@ from ccd_hls_agent.schemas import ModelConfig
 from ccd_hls_agent.skills import render_skill_capsule, route_skills
 from ccd_hls_agent.task_modes import TaskMode, classify_task_mode, is_generation_stub
 from ccd_hls_agent.token_report import TOKEN_STAGES, build_token_report, write_case_token_report, write_token_summary
-from ccd_hls_agent.utils import estimate_tokens, json_dumps, new_id, read_text, utc_now, write_text
+from ccd_hls_agent.utils import estimate_tokens, fit_text_to_token_budget, json_dumps, new_id, read_text, utc_now, write_text
 from ccd_hls_agent.workflow import write_workflow_artifacts_from_stage_records
 
 
@@ -93,6 +93,31 @@ def public_model_dump(model: ModelConfig) -> dict[str, Any]:
     if data.get("api_key_env"):
         data["api_key_env"] = str(data["api_key_env"])
     return data
+
+
+def llm_prompt_budget(model: ModelConfig, system_prompt: str, *, reserve_tokens: int = 256) -> int:
+    return max(256, int(model.context_window) - int(model.max_tokens) - estimate_tokens(system_prompt) - reserve_tokens)
+
+
+def fit_prompt_for_model(prompt: str, model: ModelConfig, system_prompt: str) -> tuple[str, dict[str, Any]]:
+    budget = llm_prompt_budget(model, system_prompt)
+    original_tokens = estimate_tokens(prompt)
+    if original_tokens <= budget:
+        return prompt, {
+            "prompt_fit_applied": False,
+            "prompt_tokens_est_before_fit": original_tokens,
+            "prompt_tokens_est_after_fit": original_tokens,
+            "prompt_token_budget": budget,
+            "context_window": model.context_window,
+        }
+    fitted = fit_text_to_token_budget(prompt, budget)
+    return fitted, {
+        "prompt_fit_applied": True,
+        "prompt_tokens_est_before_fit": original_tokens,
+        "prompt_tokens_est_after_fit": estimate_tokens(fitted),
+        "prompt_token_budget": budget,
+        "context_window": model.context_window,
+    }
 
 
 def discover_cases(data_dir: Path) -> list[Path]:
@@ -315,6 +340,7 @@ def build_hls_repair_prompt(
     max_llm_calls: int,
     hls_skill_capsule: str = "- No HLS skills selected.",
     local_memory_capsule: str = "- No verified local memory matched this failure.",
+    token_budget: int | None = None,
 ) -> str:
     return render_hls_repair_prompt(
         stage=stage,
@@ -328,6 +354,7 @@ def build_hls_repair_prompt(
         max_llm_calls=max_llm_calls,
         hls_skill_capsule=hls_skill_capsule,
         local_memory_capsule=local_memory_capsule,
+        token_budget=token_budget,
     )
 
 
@@ -731,6 +758,8 @@ async def run_ccd_gen_v2_case(
         call_prefix = f"llm_call_{llm_calls_used:02d}_{label}"
         prompt_path = workdir / f"{call_prefix}_prompt.txt"
         response_path = workdir / f"{call_prefix}_response.txt"
+        prompt_text, prompt_fit_metrics = fit_prompt_for_model(prompt_text, model, system_prompt)
+        metrics["prompt_fit_last"] = prompt_fit_metrics
         write_text(prompt_path, prompt_text)
         try:
             result = await client.complete(prompt_text, system_prompt=system_prompt)
@@ -744,6 +773,7 @@ async def run_ccd_gen_v2_case(
                 metrics={
                     "llm_calls_used": llm_calls_used,
                     "prompt_tokens_est": estimate_tokens(prompt_text),
+                    **prompt_fit_metrics,
                     "skill_ids": [skill.skill_id for skill in selected_skills],
                     "skill_tokens": sum(skill.token_estimate for skill in selected_skills),
                     "skill_sources": [skill.source_uri for skill in selected_skills],
@@ -767,6 +797,7 @@ async def run_ccd_gen_v2_case(
                 "completion_tokens": result.completion_tokens,
                 "duration_ms": result.duration_ms,
                 "llm_calls_used": llm_calls_used,
+                **prompt_fit_metrics,
                 "skill_ids": [skill.skill_id for skill in selected_skills],
                 "skill_tokens": sum(skill.token_estimate for skill in selected_skills),
                 "skill_sources": [skill.source_uri for skill in selected_skills],
@@ -1004,6 +1035,7 @@ async def run_ccd_gen_v2_case(
                     max_llm_calls=max_llm_calls,
                     hls_skill_capsule=skill_capsule,
                     local_memory_capsule=local_memory_capsule,
+                    token_budget=llm_prompt_budget(model, "You repair Vitis HLS C/C++ code. Return only the requested XML OUTPUT_CODE block."),
                 )
                 repair_result = await call_llm(
                     "CSIM_REPAIR",
@@ -1153,6 +1185,7 @@ async def run_ccd_gen_v2_case(
                 max_llm_calls=max_llm_calls,
                 hls_skill_capsule=skill_capsule,
                 local_memory_capsule=local_memory_capsule,
+                token_budget=llm_prompt_budget(model, "You repair Vitis HLS C/C++ code. Return only the requested XML OUTPUT_CODE block."),
             )
             repair_result = await call_llm(
                 "SYNTH_REPAIR",

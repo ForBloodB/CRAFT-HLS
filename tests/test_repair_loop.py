@@ -124,6 +124,40 @@ def test_repair_prompt_includes_failure_history(tmp_path: Path):
     assert "new error" in prompt
 
 
+def test_repair_prompt_can_fit_small_context_budget(tmp_path: Path):
+    case = make_generation_case(tmp_path)
+    (case / "kernel.cpp").write_text("int x = 0;\n" * 3000)
+    (case / "kernel_tb.cpp").write_text("int y = 0;\n" * 2500)
+
+    prompt = runner.build_hls_repair_prompt(
+        stage="CSIM",
+        kernel=case / "kernel.cpp",
+        header=case / "kernel.h",
+        tb=case / "kernel_tb.cpp",
+        description=case / "kernel_description.md",
+        failure_capsule={"stage": "CSIM", "failure_type": "compile_error", "key_errors": ["first error"]},
+        failure_history=[{"stage": "CSIM", "failure_type": "compile_error", "key_errors": [f"old error {idx}"]} for idx in range(8)],
+        attempt=2,
+        max_llm_calls=5,
+        token_budget=1800,
+    )
+
+    assert runner.estimate_tokens(prompt) <= 2200
+    assert "Failure Capsule" in prompt
+    assert "Corrected Output" in prompt
+
+
+def test_fit_prompt_for_model_truncates_before_local_context_overflow():
+    model = ModelConfig(max_tokens=128, context_window=512)
+    prompt = "abcdef\n" * 2000
+
+    fitted, metrics = runner.fit_prompt_for_model(prompt, model, "system")
+
+    assert metrics["prompt_fit_applied"] is True
+    assert metrics["prompt_tokens_est_after_fit"] <= metrics["prompt_token_budget"]
+    assert len(fitted) < len(prompt)
+
+
 def test_repeated_failure_early_stop_detects_same_error():
     capsules = [
         {

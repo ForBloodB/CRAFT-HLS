@@ -63,6 +63,29 @@ def estimate_tokens(text: str) -> int:
     return max(1, int(len(text) / 3.6))
 
 
+def fit_text_to_token_budget(text: str, token_budget: int, *, keep_tail_ratio: float = 0.45) -> str:
+    if token_budget <= 0:
+        return "[truncated: no token budget]"
+    if estimate_tokens(text) <= token_budget:
+        return text
+    max_chars = max(80, int(token_budget * 3.2))
+    if max_chars >= len(text):
+        return text
+    marker = "\n\n[truncated to fit local context]\n\n"
+    for shrink in (1.0, 0.9, 0.8, 0.7, 0.6):
+        available = max(40, int(max_chars * shrink) - len(marker))
+        tail_chars = int(available * keep_tail_ratio)
+        head_chars = max(20, available - tail_chars)
+        omitted = len(text) - head_chars - tail_chars
+        if omitted <= 0:
+            candidate = text[:available]
+        else:
+            candidate = f"{text[:head_chars]}{marker}{text[-tail_chars:]}"
+        if estimate_tokens(candidate) <= token_budget:
+            return candidate
+    return text[: max(40, int(token_budget * 2.8))]
+
+
 def write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")

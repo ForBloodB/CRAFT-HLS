@@ -30,6 +30,7 @@ class ModelConfig(BaseModel):
     model: str = "Qwen3-Coder-30B-A3B-Instruct"
     temperature: float = 0.2
     max_tokens: int = 2048
+    context_window: int = 16384
     timeout: float = 60.0
 
 

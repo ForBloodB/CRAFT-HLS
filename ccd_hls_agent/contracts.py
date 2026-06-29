@@ -95,21 +95,45 @@ def build_hls_repair_prompt(
     max_llm_calls: int,
     hls_skill_capsule: str = "- No HLS skills selected.",
     local_memory_capsule: str = "- No verified local memory matched this failure.",
+    token_budget: int | None = None,
     template_dir: Path | None = None,
 ) -> str:
-    return render_contract_template(
-        "hls_repair.md",
-        template_dir,
-        stage=stage,
-        kernel_name=kernel.name,
-        attempt=attempt,
-        max_llm_calls=max_llm_calls,
-        failure_capsule_json=json.dumps(failure_capsule, ensure_ascii=False, indent=2),
-        failure_history_json=json.dumps(summarize_failure_history(failure_history), ensure_ascii=False, indent=2),
-        hls_skill_capsule=hls_skill_capsule,
-        local_memory_capsule=local_memory_capsule,
-        description_input=_input_code(description, token_budget=1200),
-        header_input=_input_code(header, token_budget=1600),
-        tb_input=_input_code(tb, token_budget=2200),
-        kernel_input=_input_code(kernel, token_budget=2600),
-    )
+    budget_steps = [
+        {"description": 1200, "header": 1600, "tb": 2200, "kernel": 2600, "history": 4, "memory": 900},
+        {"description": 700, "header": 1400, "tb": 1400, "kernel": 2200, "history": 3, "memory": 600},
+        {"description": 450, "header": 1200, "tb": 900, "kernel": 1800, "history": 2, "memory": 400},
+        {"description": 300, "header": 1000, "tb": 600, "kernel": 1400, "history": 1, "memory": 260},
+        {"description": 180, "header": 800, "tb": 360, "kernel": 1000, "history": 1, "memory": 160},
+    ]
+
+    def render_with_budget(step: dict[str, int]) -> str:
+        memory_text = truncate_estimated_tokens(local_memory_capsule, step["memory"])
+        return render_contract_template(
+            "hls_repair.md",
+            template_dir,
+            stage=stage,
+            kernel_name=kernel.name,
+            attempt=attempt,
+            max_llm_calls=max_llm_calls,
+            failure_capsule_json=json.dumps(failure_capsule, ensure_ascii=False, indent=2),
+            failure_history_json=json.dumps(
+                summarize_failure_history(failure_history, limit=step["history"]),
+                ensure_ascii=False,
+                indent=2,
+            ),
+            hls_skill_capsule=hls_skill_capsule,
+            local_memory_capsule=memory_text,
+            description_input=_input_code(description, token_budget=step["description"]),
+            header_input=_input_code(header, token_budget=step["header"]),
+            tb_input=_input_code(tb, token_budget=step["tb"]),
+            kernel_input=_input_code(kernel, token_budget=step["kernel"]),
+        )
+
+    prompt = render_with_budget(budget_steps[0])
+    if token_budget is None:
+        return prompt
+    for step in budget_steps:
+        prompt = render_with_budget(step)
+        if estimate_tokens(prompt) <= token_budget:
+            return prompt
+    return prompt
