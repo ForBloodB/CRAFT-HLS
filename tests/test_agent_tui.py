@@ -116,6 +116,8 @@ def test_parser_keeps_view_and_run_subcommands():
             "2",
             "--csim-budget",
             "0",
+            "--hls-platform",
+            "/tmp/kv260.xpfm",
             "--early-stop-similarity-threshold",
             "0.91",
             "--disable-local-memory",
@@ -133,6 +135,7 @@ def test_parser_keeps_view_and_run_subcommands():
     assert run.max_llm_calls == 3
     assert run.llm_call_budget == 2
     assert run.csim_budget == 0
+    assert run.hls_platform == "/tmp/kv260.xpfm"
     assert run.early_stop_similarity_threshold == 0.91
     assert run.disable_local_memory is True
     assert recent.command == "recent"

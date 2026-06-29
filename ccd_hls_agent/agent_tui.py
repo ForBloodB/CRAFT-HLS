@@ -538,6 +538,10 @@ def run_benchmark(args: argparse.Namespace) -> Path:
         "--out-dir",
         str(out_dir),
     ]
+    if getattr(args, "hls_part", None):
+        command.extend(["--hls-part", str(args.hls_part)])
+    if getattr(args, "hls_platform", None):
+        command.extend(["--hls-platform", str(args.hls_platform)])
     if args.csim_budget is not None:
         command.extend(["--csim-budget", str(args.csim_budget)])
     if args.synth_budget is not None:
@@ -575,6 +579,8 @@ def run_contract_backend(args: argparse.Namespace) -> Path:
         data_dir=case_root,
         model_config=args.model_config,
         hls_backend=args.hls_backend,
+        hls_part=args.hls_part,
+        hls_platform=args.hls_platform,
         method=args.method,
         max_llm_calls=args.max_llm_calls,
         llm_call_budget=args.llm_call_budget,
@@ -1118,6 +1124,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--data-dir", type=Path, default=Path("external/hls-eval/hls_eval_data"))
     run.add_argument("--model-config", type=Path, default=Path("configs/deepseek_v4_flash.json"))
     run.add_argument("--hls-backend", choices=["hls_eval", "vitis", "command", "mock"], default="vitis")
+    run.add_argument("--hls-part", default=None)
+    run.add_argument("--hls-platform", default=None)
     run.add_argument("--method", default="ccd_hls_loop")
     run.add_argument("--max-llm-calls", type=int, default=2)
     run.add_argument("--llm-call-budget", type=int, default=None)
@@ -1164,6 +1172,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_contract.add_argument("--hls-eval-root", type=Path, default=Path("external/hls-eval"))
     run_contract.add_argument("--model-config", type=Path, default=Path("configs/deepseek_v4_flash.local.json"))
     run_contract.add_argument("--hls-backend", choices=["hls_eval", "vitis", "command", "mock"], default="vitis")
+    run_contract.add_argument("--hls-part", default=None)
+    run_contract.add_argument("--hls-platform", default=None)
     run_contract.add_argument("--method", default="ccd_hls_loop")
     run_contract.add_argument("--max-llm-calls", type=int, default=2)
     run_contract.add_argument("--llm-call-budget", type=int, default=None)

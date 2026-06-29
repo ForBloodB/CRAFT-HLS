@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from ccd_hls_agent.hls_backends import MockHLSBackend, ToolResult, VitisUnifiedHLSBackend, discover_tb_data_files
+from ccd_hls_agent.hls_backends import HLSBackendConfig, MockHLSBackend, ToolResult, VitisUnifiedHLSBackend, discover_tb_data_files
 
 
 def test_mock_backend(tmp_path: Path):
@@ -60,6 +60,26 @@ def test_vitis_config_includes_tb_data_files(tmp_path: Path):
 
     assert f"tb.file={(case / 'input.data').resolve()}" in text
     assert f"tb.file={(case / 'check.data').resolve()}" in text
+
+
+def test_vitis_config_prefers_platform_over_part(tmp_path: Path):
+    case = tmp_path / "case"
+    case.mkdir()
+    platform = tmp_path / "kv260.xpfm"
+    platform.write_text("platform\n")
+    (case / "kernel.cpp").write_text("void kernel(){}\n")
+
+    backend = VitisUnifiedHLSBackend(HLSBackendConfig(part="xczu9eg-ffvb1156-2-e", platform=str(platform)))
+    cfg = backend._write_config(
+        tmp_path / "build",
+        [case / "kernel.cpp"],
+        {"top_function": "kernel"},
+        include_tb=False,
+    )
+    text = cfg.read_text()
+
+    assert f"platform={platform.resolve()}" in text
+    assert "part=xczu9eg-ffvb1156-2-e" not in text
 
 
 def test_vitis_csim_distinguishes_compile_from_testbench_failure(tmp_path: Path, monkeypatch):

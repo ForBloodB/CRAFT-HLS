@@ -58,7 +58,8 @@ class HLSBackendConfig:
     vivado_hls_path: str | None = None
     vivado_path: str | None = None
     hls_eval_command: str | None = None
-    part: str = "xczu9eg-ffvb1156-2-e"
+    part: str = field(default_factory=lambda: os.environ.get("HLS_PART", "xczu9eg-ffvb1156-2-e"))
+    platform: str | None = field(default_factory=lambda: os.environ.get("HLS_PLATFORM"))
     clock_period_ns: float = 5.0
     timeout_seconds: float = 360.0
 
@@ -407,14 +408,15 @@ class VitisUnifiedHLSBackend:
         workdir = workdir.resolve()
         cfg = workdir / ("hls_csim.cfg" if include_tb else "hls_synth.cfg")
         top = config.get("top_function")
-        part = config.get("part", self.config.part)
+        part = config.get("part") or self.config.part
+        platform = config.get("platform") or self.config.platform
         freqhz = config.get("freqhz", "200MHz")
-        lines = [
-            f"part={part}",
-            f"freqhz={freqhz}",
-            "",
-            "[hls]",
-        ]
+        lines = []
+        if platform:
+            lines.append(f"platform={Path(str(platform)).expanduser().resolve()}")
+        else:
+            lines.append(f"part={part}")
+        lines.extend([f"freqhz={freqhz}", "", "[hls]"])
         if top:
             lines.append(f"syn.top={top}")
         design_files = [p for p in source_files if not p.name.endswith("_tb.cpp")]

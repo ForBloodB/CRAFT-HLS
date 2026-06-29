@@ -381,18 +381,35 @@ def stage_runtime_files(case_dir: Path, build_dir: Path) -> list[str]:
     return copied
 
 
+def backend_config(hls_eval_root: Path | None, hls_part: str | None, hls_platform: str | None) -> HLSBackendConfig:
+    defaults = HLSBackendConfig()
+    return HLSBackendConfig(
+        hls_eval_root=str(hls_eval_root) if hls_eval_root else None,
+        part=hls_part or defaults.part,
+        platform=hls_platform or defaults.platform,
+    )
+
+
+def backend_case_config(top_function: str | None, hls_part: str | None, hls_platform: str | None) -> dict[str, Any]:
+    defaults = HLSBackendConfig()
+    return {
+        "top_function": top_function,
+        "part": hls_part or defaults.part,
+        "platform": hls_platform or defaults.platform,
+    }
+
+
 async def evaluate_design(
     backend_kind: str,
     hls_eval_root: Path | None,
+    hls_part: str | None,
+    hls_platform: str | None,
     case_dir: Path,
     build_dir: Path,
     top_function: str | None,
 ) -> tuple[dict[str, bool], dict[str, Any], int]:
-    backend = build_hls_backend(
-        backend_kind,
-        HLSBackendConfig(hls_eval_root=str(hls_eval_root) if hls_eval_root else None),
-    )
-    config = {"top_function": top_function}
+    backend = build_hls_backend(backend_kind, backend_config(hls_eval_root, hls_part, hls_platform))
+    config = backend_case_config(top_function, hls_part, hls_platform)
     tool_calls = 0
     stage_runtime_files(case_dir, build_dir)
     csim = await asyncio.to_thread(backend.run_csim, build_dir, source_files(case_dir, include_tb=True), config)
@@ -428,15 +445,14 @@ async def evaluate_design(
 async def run_csim_stage(
     backend_kind: str,
     hls_eval_root: Path | None,
+    hls_part: str | None,
+    hls_platform: str | None,
     case_dir: Path,
     build_dir: Path,
     top_function: str | None,
 ) -> tuple[dict[str, bool], dict[str, Any], ToolResult]:
-    backend = build_hls_backend(
-        backend_kind,
-        HLSBackendConfig(hls_eval_root=str(hls_eval_root) if hls_eval_root else None),
-    )
-    config = {"top_function": top_function}
+    backend = build_hls_backend(backend_kind, backend_config(hls_eval_root, hls_part, hls_platform))
+    config = backend_case_config(top_function, hls_part, hls_platform)
     runtime_files = stage_runtime_files(case_dir, build_dir)
     csim = await asyncio.to_thread(backend.run_csim, build_dir, source_files(case_dir, include_tb=True), config)
     flags = {
@@ -457,15 +473,14 @@ async def run_csim_stage(
 async def run_synth_stage(
     backend_kind: str,
     hls_eval_root: Path | None,
+    hls_part: str | None,
+    hls_platform: str | None,
     case_dir: Path,
     build_dir: Path,
     top_function: str | None,
 ) -> tuple[bool, dict[str, Any], ToolResult]:
-    backend = build_hls_backend(
-        backend_kind,
-        HLSBackendConfig(hls_eval_root=str(hls_eval_root) if hls_eval_root else None),
-    )
-    config = {"top_function": top_function}
+    backend = build_hls_backend(backend_kind, backend_config(hls_eval_root, hls_part, hls_platform))
+    config = backend_case_config(top_function, hls_part, hls_platform)
     synth = await asyncio.to_thread(backend.run_synth, build_dir, source_files(case_dir, include_tb=False), config)
     can_synthesize = synth.return_code == 0
     metrics = {
@@ -499,6 +514,8 @@ async def run_ccd_gen_v2_case(
     enable_deterministic_repair: bool = True,
     enable_local_memory: bool = True,
     memory_path: Path | None = None,
+    hls_part: str | None = None,
+    hls_platform: str | None = None,
 ) -> CaseResult:
     t0 = time.monotonic()
     files = prepare_generation_case(case_path, workdir / "design")
@@ -881,6 +898,8 @@ async def run_ccd_gen_v2_case(
             csim_flags, csim_metrics, csim_result = await run_csim_stage(
                 backend_kind,
                 hls_eval_root,
+                hls_part,
+                hls_platform,
                 workdir / "design",
                 csim_build,
                 top_function,
@@ -1025,6 +1044,8 @@ async def run_ccd_gen_v2_case(
             can_synth, synth_metrics, synth_result = await run_synth_stage(
                 backend_kind,
                 hls_eval_root,
+                hls_part,
+                hls_platform,
                 workdir / "design",
                 synth_build,
                 top_function,
@@ -1353,6 +1374,8 @@ async def main() -> None:
     parser.add_argument("--out-dir", type=Path, default=None)
     parser.add_argument("--methods", default="ccd_hls_loop")
     parser.add_argument("--hls-backend", choices=["hls_eval", "vitis", "command", "mock"], default="vitis")
+    parser.add_argument("--hls-part", default=None, help="FPGA part for Vitis config. Defaults to HLS_PART or the project default.")
+    parser.add_argument("--hls-platform", default=None, help="Vitis platform .xpfm path. Defaults to HLS_PLATFORM when set.")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--case-filter", default=None, help="Regex matched against case path/name.")
     parser.add_argument("--samples", type=int, default=1)
@@ -1415,6 +1438,8 @@ async def main() -> None:
         "methods": methods,
         "samples": args.samples,
         "hls_backend": args.hls_backend,
+        "hls_part": args.hls_part or os.environ.get("HLS_PART"),
+        "hls_platform": args.hls_platform or os.environ.get("HLS_PLATFORM"),
         "prompt_budget": args.prompt_budget,
         "max_llm_calls": args.max_llm_calls,
         "llm_call_budget": args.llm_call_budget if args.llm_call_budget is not None else args.max_llm_calls,
@@ -1479,6 +1504,8 @@ async def main() -> None:
                         not args.disable_deterministic_repair,
                         not args.disable_local_memory,
                         args.memory_path,
+                        args.hls_part,
+                        args.hls_platform,
                     )
                 else:
                     raise ValueError(f"Unknown method: {method}")

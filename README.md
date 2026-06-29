@@ -253,6 +253,7 @@ HLS-agent run \
   --data-dir external/hls-eval/hls_eval_data \
   --model-config configs/qwen3_coder_30b.local.json \
   --hls-backend vitis \
+  --hls-platform /opt/2025.2/Vitis/base_platforms/xilinx_kv260_base_202520_1/xilinx_kv260_base_202520_1.xpfm \
   --max-llm-calls 5 \
   --early-stop-similarity-threshold 0.92 \
   --skill-token-budget 600 \
@@ -261,6 +262,15 @@ HLS-agent run \
   --no-view \
   --snapshot
 ```
+
+如果不想在每条命令里写平台路径，也可以只在本机 shell 中设置：
+
+```bash
+export HLS_PLATFORM=/opt/2025.2/Vitis/base_platforms/xilinx_kv260_base_202520_1/xilinx_kv260_base_202520_1.xpfm
+export HLS_PART=xck26-sfvc784-2LV-c
+```
+
+命令行显式传入的 `--hls-platform` / `--hls-part` 优先级高于环境变量。
 
 消融实验可以关闭模块：
 
@@ -439,6 +449,8 @@ python scripts/run_hls_eval_benchmark.py \
 --case-filter
 --samples
 --max-llm-calls
+--hls-part
+--hls-platform
 --llm-call-budget
 --csim-budget
 --synth-budget
