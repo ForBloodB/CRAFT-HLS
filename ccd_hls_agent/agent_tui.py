@@ -145,6 +145,20 @@ def summary_stage(run_dir: Path) -> dict[str, Any]:
     result = load_json(run_dir / "result.json", {})
     metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
     workflow = load_json(run_dir / "workflow_status.json", {})
+    artifacts = {
+        "result": str(run_dir / "result.json"),
+        "stage_records": str(run_dir / "stage_records.json"),
+        "failure_capsules": str(run_dir / "failure_capsules.json"),
+        "token_report": str(run_dir / "token_report.json"),
+        "budget_ledger": str(run_dir / "budget_ledger.json"),
+        "selected_skills": str(run_dir / "selected_skills.json"),
+        "workflow_status": str(run_dir / "workflow_status.json"),
+        "workflow_events": str(run_dir / "workflow_events.jsonl"),
+    }
+    for name in ["selected_actions", "candidate_manifest", "candidate_results", "selected_candidate"]:
+        path = run_dir / f"{name}.json"
+        if path.exists():
+            artifacts[name] = str(path)
     return {
         "stage": "SUMMARY",
         "status": "completed" if result else "running",
@@ -169,20 +183,7 @@ def summary_stage(run_dir: Path) -> dict[str, Any]:
             "candidate_evaluations": metrics.get("candidate_evaluations"),
             "selected_candidate_score": metrics.get("selected_candidate_score"),
         },
-        "artifacts": {
-            "result": str(run_dir / "result.json"),
-            "stage_records": str(run_dir / "stage_records.json"),
-            "failure_capsules": str(run_dir / "failure_capsules.json"),
-            "token_report": str(run_dir / "token_report.json"),
-            "budget_ledger": str(run_dir / "budget_ledger.json"),
-            "selected_skills": str(run_dir / "selected_skills.json"),
-            "selected_actions": str(run_dir / "selected_actions.json"),
-            "candidate_manifest": str(run_dir / "candidate_manifest.json"),
-            "candidate_results": str(run_dir / "candidate_results.json"),
-            "selected_candidate": str(run_dir / "selected_candidate.json"),
-            "workflow_status": str(run_dir / "workflow_status.json"),
-            "workflow_events": str(run_dir / "workflow_events.jsonl"),
-        },
+        "artifacts": artifacts,
     }
 
 
