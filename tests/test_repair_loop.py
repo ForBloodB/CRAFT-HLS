@@ -459,6 +459,64 @@ def test_candidate_synth_uses_short_timeout(tmp_path: Path, monkeypatch):
     assert result.metrics["stopped_reason"] == "candidate_repair_failed"
 
 
+def test_main_synth_timeout_is_forwarded(tmp_path: Path, monkeypatch):
+    case = make_generation_case(tmp_path)
+    client = FakeClient()
+    seen_timeouts: list[float | None] = []
+
+    async def fake_csim_stage(*args, **kwargs):
+        tool = ToolResult(
+            status="completed",
+            return_code=0,
+            stdout="passed\n",
+            stderr="",
+            metrics={"can_compile": True, "can_pass_testbench": True},
+            command="fake_csim",
+            duration_ms=1,
+        )
+        return (
+            {"can_compile": True, "can_pass_testbench": True, "can_synthesize": False},
+            {"csim": tool.metrics, "csim_return_code": 0},
+            tool,
+        )
+
+    async def fake_synth_stage(*args, **kwargs):
+        seen_timeouts.append(kwargs.get("timeout_seconds"))
+        tool = ToolResult(
+            status="completed",
+            return_code=0,
+            stdout="synth passed\n",
+            stderr="",
+            metrics={"can_synthesize": True},
+            command="fake_synth",
+            duration_ms=1,
+        )
+        return True, {"synth": tool.metrics, "synth_return_code": 0}, tool
+
+    monkeypatch.setattr(runner, "build_model_client", lambda model: client)
+    monkeypatch.setattr(runner, "run_csim_stage", fake_csim_stage)
+    monkeypatch.setattr(runner, "run_synth_stage", fake_synth_stage)
+
+    result = asyncio.run(
+        runner.run_ccd_gen_v2_case(
+            "exp_test",
+            case,
+            tmp_path / "run",
+            ModelConfig(),
+            "mock",
+            None,
+            0,
+            6000,
+            2,
+            200,
+            synth_timeout_sec=11.0,
+        )
+    )
+
+    assert result.can_synthesize
+    assert seen_timeouts == [11.0]
+
+
 def test_operator_memory_uses_token_report_cost():
     result = runner.CaseResult(
         experiment_id="exp_test",

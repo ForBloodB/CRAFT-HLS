@@ -555,6 +555,8 @@ def run_benchmark(args: argparse.Namespace) -> Path:
         command.extend(["--csim-budget", str(args.csim_budget)])
     if args.synth_budget is not None:
         command.extend(["--synth-budget", str(args.synth_budget)])
+    if getattr(args, "synth_timeout_sec", None) is not None:
+        command.extend(["--synth-timeout-sec", str(args.synth_timeout_sec)])
     if args.unified_credit_budget is not None:
         command.extend(["--unified-credit-budget", str(args.unified_credit_budget)])
     if getattr(args, "disable_deterministic_repair", False):
@@ -599,6 +601,7 @@ def run_contract_backend(args: argparse.Namespace) -> Path:
         llm_call_budget=args.llm_call_budget,
         csim_budget=args.csim_budget,
         synth_budget=args.synth_budget,
+        synth_timeout_sec=args.synth_timeout_sec,
         cosim_budget=args.cosim_budget,
         unified_credit_budget=args.unified_credit_budget,
         skill_token_budget=args.skill_token_budget,
@@ -1147,6 +1150,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--llm-call-budget", type=int, default=None)
     run.add_argument("--csim-budget", type=int, default=None)
     run.add_argument("--synth-budget", type=int, default=None)
+    run.add_argument("--synth-timeout-sec", type=float, default=None)
     run.add_argument("--cosim-budget", type=int, default=0)
     run.add_argument("--unified-credit-budget", type=int, default=None)
     run.add_argument("--skill-token-budget", type=int, default=600)
@@ -1198,6 +1202,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_contract.add_argument("--llm-call-budget", type=int, default=None)
     run_contract.add_argument("--csim-budget", type=int, default=None)
     run_contract.add_argument("--synth-budget", type=int, default=None)
+    run_contract.add_argument("--synth-timeout-sec", type=float, default=None)
     run_contract.add_argument("--cosim-budget", type=int, default=0)
     run_contract.add_argument("--unified-credit-budget", type=int, default=None)
     run_contract.add_argument("--skill-token-budget", type=int, default=600)

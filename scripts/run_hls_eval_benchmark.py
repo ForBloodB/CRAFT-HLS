@@ -558,6 +558,7 @@ async def run_ccd_gen_v2_case(
     candidate_synth_timeout_sec: float | None = 180.0,
     hls_part: str | None = None,
     hls_platform: str | None = None,
+    synth_timeout_sec: float | None = None,
 ) -> CaseResult:
     t0 = time.monotonic()
     files = prepare_generation_case(case_path, workdir / "design")
@@ -663,6 +664,7 @@ async def run_ccd_gen_v2_case(
         "candidate_count": candidate_count,
         "candidate_policy": candidate_policy,
         "candidate_synth_timeout_sec": candidate_synth_timeout_sec,
+        "synth_timeout_sec": synth_timeout_sec,
         "candidate_evaluations": 0,
         "selected_candidate_score": None,
         "action_candidate_applied": 0,
@@ -1626,6 +1628,7 @@ async def run_ccd_gen_v2_case(
                 workdir / "design",
                 synth_build,
                 top_function,
+                timeout_seconds=synth_timeout_sec,
             )
             tool_calls += 1
             metrics["budget_summary"] = budget.summary()
@@ -2021,6 +2024,7 @@ async def main() -> None:
     parser.add_argument("--llm-call-budget", type=int, default=None, help="LLM call budget. Defaults to --max-llm-calls.")
     parser.add_argument("--csim-budget", type=int, default=None, help="Maximum CSIM calls per case. Omit for unlimited.")
     parser.add_argument("--synth-budget", type=int, default=None, help="Maximum SYNTH calls per case. Omit for unlimited.")
+    parser.add_argument("--synth-timeout-sec", type=float, default=None, help="Optional timeout for main SYNTH calls. Omit to use backend default.")
     parser.add_argument("--cosim-budget", type=int, default=0, help="Maximum COSIM calls per case. Default 0 because COSIM is not in M1-M3 loop.")
     parser.add_argument("--unified-credit-budget", type=int, default=None, help="Optional unified budget consumed by every LLM/tool call.")
     parser.add_argument("--skill-token-budget", type=int, default=600)
@@ -2090,6 +2094,7 @@ async def main() -> None:
         "llm_call_budget": args.llm_call_budget if args.llm_call_budget is not None else args.max_llm_calls,
         "csim_budget": args.csim_budget,
         "synth_budget": args.synth_budget,
+        "synth_timeout_sec": args.synth_timeout_sec,
         "cosim_budget": args.cosim_budget,
         "unified_credit_budget": args.unified_credit_budget,
         "skill_token_budget": args.skill_token_budget,
@@ -2157,6 +2162,7 @@ async def main() -> None:
                         args.candidate_synth_timeout_sec,
                         args.hls_part,
                         args.hls_platform,
+                        args.synth_timeout_sec,
                     )
                 else:
                     raise ValueError(f"Unknown method: {method}")
