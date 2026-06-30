@@ -164,6 +164,10 @@ def summary_stage(run_dir: Path) -> dict[str, Any]:
             "stopped_reason": metrics.get("stopped_reason"),
             "total_tokens": result.get("total_tokens"),
             "tool_calls": result.get("tool_calls"),
+            "selected_actions": metrics.get("selected_actions"),
+            "candidate_count": metrics.get("candidate_count"),
+            "candidate_evaluations": metrics.get("candidate_evaluations"),
+            "selected_candidate_score": metrics.get("selected_candidate_score"),
         },
         "artifacts": {
             "result": str(run_dir / "result.json"),
@@ -172,6 +176,10 @@ def summary_stage(run_dir: Path) -> dict[str, Any]:
             "token_report": str(run_dir / "token_report.json"),
             "budget_ledger": str(run_dir / "budget_ledger.json"),
             "selected_skills": str(run_dir / "selected_skills.json"),
+            "selected_actions": str(run_dir / "selected_actions.json"),
+            "candidate_manifest": str(run_dir / "candidate_manifest.json"),
+            "candidate_results": str(run_dir / "candidate_results.json"),
+            "selected_candidate": str(run_dir / "selected_candidate.json"),
             "workflow_status": str(run_dir / "workflow_status.json"),
             "workflow_events": str(run_dir / "workflow_events.jsonl"),
         },
@@ -554,6 +562,8 @@ def run_benchmark(args: argparse.Namespace) -> Path:
         command.append("--disable-local-memory")
     if getattr(args, "memory_path", None) is not None:
         command.extend(["--memory-path", str(args.memory_path)])
+    command.extend(["--candidate-count", str(getattr(args, "candidate_count", 1))])
+    command.extend(["--candidate-policy", str(getattr(args, "candidate_policy", "repair_only"))])
     print("Running:", flush=True)
     print(" ".join(command), flush=True)
     print("", flush=True)
@@ -594,6 +604,8 @@ def run_contract_backend(args: argparse.Namespace) -> Path:
         disable_deterministic_repair=args.disable_deterministic_repair,
         disable_local_memory=args.disable_local_memory,
         memory_path=args.memory_path,
+        candidate_count=args.candidate_count,
+        candidate_policy=args.candidate_policy,
         out_dir=out_dir,
     )
     run_dir = run_benchmark(runner_args)
@@ -1139,6 +1151,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--disable-deterministic-repair", action="store_true")
     run.add_argument("--disable-local-memory", action="store_true")
     run.add_argument("--memory-path", type=Path, default=None)
+    run.add_argument("--candidate-count", type=int, default=1)
+    run.add_argument("--candidate-policy", default="repair_only", choices=["repair_only"])
     run.add_argument("--out-dir", type=Path, default=None)
     run.add_argument("--no-view", action="store_true")
     run.add_argument("--snapshot", action="store_true", help="Print a summary after the run.")
@@ -1187,6 +1201,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_contract.add_argument("--disable-deterministic-repair", action="store_true")
     run_contract.add_argument("--disable-local-memory", action="store_true")
     run_contract.add_argument("--memory-path", type=Path, default=None)
+    run_contract.add_argument("--candidate-count", type=int, default=1)
+    run_contract.add_argument("--candidate-policy", default="repair_only", choices=["repair_only"])
     run_contract.add_argument("--out-dir", type=Path, default=None)
     run_contract.add_argument("--snapshot", action="store_true")
 

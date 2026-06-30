@@ -333,6 +333,71 @@ def test_csim_budget_zero_stops_before_tool_call(tmp_path: Path, monkeypatch):
     assert result.tool_calls == 0
 
 
+def test_candidate_rerank_artifacts_are_written(tmp_path: Path, monkeypatch):
+    case = make_generation_case(tmp_path)
+    client = FakeClient()
+
+    async def fake_csim_stage(*args, **kwargs):
+        case_dir = Path(args[4])
+        build_dir = Path(args[5])
+        passes = "candidate_1" in str(case_dir) or "csim_attempt_2" in str(build_dir)
+        tool = ToolResult(
+            status="completed" if passes else "failed",
+            return_code=0 if passes else 1,
+            stdout="passed\n" if passes else "FAIL: mismatch at index 0\n",
+            stderr="" if passes else "kernel_tb.cpp:3: error: mismatch expected 1 actual 0\n",
+            metrics={"can_compile": True, "can_pass_testbench": passes},
+            command="fake_csim",
+            duration_ms=1,
+        )
+        return (
+            {"can_compile": True, "can_pass_testbench": passes, "can_synthesize": False},
+            {"csim": tool.metrics, "csim_return_code": tool.return_code},
+            tool,
+        )
+
+    async def fake_synth_stage(*args, **kwargs):
+        tool = ToolResult(
+            status="completed",
+            return_code=0,
+            stdout="synth passed\n",
+            stderr="",
+            metrics={"can_synthesize": True},
+            command="fake_synth",
+            duration_ms=1,
+        )
+        return True, {"synth": tool.metrics, "synth_return_code": 0}, tool
+
+    monkeypatch.setattr(runner, "build_model_client", lambda model: client)
+    monkeypatch.setattr(runner, "run_csim_stage", fake_csim_stage)
+    monkeypatch.setattr(runner, "run_synth_stage", fake_synth_stage)
+    workdir = tmp_path / "run"
+
+    result = asyncio.run(
+        runner.run_ccd_gen_v2_case(
+            "exp_test",
+            case,
+            workdir,
+            ModelConfig(),
+            "mock",
+            None,
+            0,
+            6000,
+            2,
+            200,
+            candidate_count=2,
+        )
+    )
+
+    assert result.can_synthesize
+    assert (workdir / "diagnosis_assertion_csim_attempt_1.json").exists()
+    assert (workdir / "selected_actions.json").exists()
+    assert (workdir / "candidate_manifest.json").exists()
+    assert (workdir / "candidate_results.json").exists()
+    assert (workdir / "selected_candidate.json").exists()
+    assert result.metrics["action_candidate_applied"] == 1
+
+
 def test_operator_memory_uses_token_report_cost():
     result = runner.CaseResult(
         experiment_id="exp_test",

@@ -4,6 +4,15 @@ from ccd_hls_agent.deterministic_repair import apply_deterministic_repair
 from ccd_hls_agent.failure_analysis import build_failure_capsule
 from ccd_hls_agent.hls_backends import ToolResult
 from ccd_hls_agent.local_memory import HLSLocalMemory, error_signature_from_capsule, render_memory_capsule
+from ccd_hls_agent.repair_actions import (
+    ACTION_ADD_MISSING_INCLUDE,
+    ACTION_FIX_ARRAY_SHAPE,
+    ACTION_LLM_SEMANTIC_REPAIR,
+    ACTION_REWRITE_INDEX_ORDER,
+    build_diagnosis_assertion,
+    select_best_candidate,
+    select_repair_actions,
+)
 from ccd_hls_agent.skills import route_skills
 from ccd_hls_agent.task_modes import TaskMode
 
@@ -106,3 +115,110 @@ def test_local_memory_round_trip(tmp_path: Path):
     assert hits
     assert hits[0].verified
     assert "state" in render_memory_capsule(hits)
+
+
+def test_diagnosis_assertion_maps_array_error_to_actions():
+    capsule = {
+        "failure_class": "array_dimension_type_error",
+        "signal_lines": ["error: invalid operands to binary expression ('uint8_t[4]' and 'uint8_t[4]')"],
+        "key_errors": [],
+        "root_cause_hints": ["array misuse"],
+    }
+
+    assertion = build_diagnosis_assertion(
+        case_name="mix_columns",
+        stage="CSIM",
+        task_mode="repair_compile",
+        failure_capsule=capsule,
+        attempt=1,
+    )
+
+    assert assertion.failure_class == "array_dimension_type_error"
+    assert ACTION_FIX_ARRAY_SHAPE in assertion.recommended_actions
+    assert ACTION_REWRITE_INDEX_ORDER in assertion.recommended_actions
+    assert "ADD_ARRAY_PARTITION" in assertion.blocked_actions
+
+
+def test_action_memory_positive_and_negative_adjust_ranking(tmp_path: Path):
+    memory = HLSLocalMemory(tmp_path / "memory.sqlite")
+    capsule = {
+        "failure_class": "signature_or_top_mismatch",
+        "signal_lines": ["error: undefined reference to top_kernel"],
+        "key_errors": [],
+    }
+    assertion = build_diagnosis_assertion(
+        case_name="demo",
+        stage="CSIM",
+        task_mode="repair_compile",
+        failure_capsule=capsule,
+        attempt=1,
+    )
+    signature = error_signature_from_capsule(capsule)
+    memory.add_action_event(
+        case_name="demo",
+        case_family="unit",
+        diagnosis_claim=assertion.claim,
+        failure_class=assertion.failure_class,
+        error_signature=signature,
+        action_id=ACTION_ADD_MISSING_INCLUDE,
+        action_params={},
+        polarity="positive",
+        before_flags={"can_compile": False},
+        after_flags={"can_compile": True},
+        verified=True,
+        reuse_conditions={},
+        anti_reuse_conditions={},
+        artifact_uri="run",
+    )
+    memory.add_action_event(
+        case_name="demo",
+        case_family="unit",
+        diagnosis_claim=assertion.claim,
+        failure_class=assertion.failure_class,
+        error_signature=signature,
+        action_id="ALIGN_SIGNATURE",
+        action_params={},
+        polarity="negative",
+        before_flags={"can_compile": False},
+        after_flags={"can_compile": False},
+        verified=False,
+        reuse_conditions={},
+        anti_reuse_conditions={},
+        artifact_uri="run",
+    )
+
+    hits = memory.search_action_memory(
+        case_family="unit",
+        failure_class=assertion.failure_class,
+        error_signature=signature,
+        action_ids=assertion.recommended_actions,
+    )
+    selected = select_repair_actions(assertion, action_memory_hits=hits, limit=2)
+
+    assert selected[0].action_id == ACTION_ADD_MISSING_INCLUDE
+    assert selected[-1].action_id == "ALIGN_SIGNATURE"
+
+
+def test_candidate_rerank_prefers_synth_pass():
+    best = select_best_candidate(
+        [
+            {"candidate_id": 0, "flags": {"can_compile": False, "can_pass_testbench": False, "can_synthesize": False}},
+            {"candidate_id": 1, "flags": {"can_compile": True, "can_pass_testbench": True, "can_synthesize": False}},
+            {"candidate_id": 2, "flags": {"can_compile": True, "can_pass_testbench": True, "can_synthesize": True}},
+        ]
+    )
+
+    assert best is not None
+    assert best["candidate_id"] == 2
+
+
+def test_default_unknown_action_is_semantic_repair():
+    assertion = build_diagnosis_assertion(
+        case_name="demo",
+        stage="CSIM",
+        task_mode="repair_csim",
+        failure_capsule={"failure_class": "unknown_hls_failure", "signal_lines": ["ERROR: unknown"]},
+        attempt=1,
+    )
+
+    assert select_repair_actions(assertion, limit=1)[0].action_id == ACTION_LLM_SEMANTIC_REPAIR
