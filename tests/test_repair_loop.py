@@ -398,6 +398,67 @@ def test_candidate_rerank_artifacts_are_written(tmp_path: Path, monkeypatch):
     assert result.metrics["action_candidate_applied"] == 1
 
 
+def test_candidate_synth_uses_short_timeout(tmp_path: Path, monkeypatch):
+    case = make_generation_case(tmp_path)
+    client = FakeClient()
+    seen_timeouts: list[float | None] = []
+
+    async def fake_csim_stage(*args, **kwargs):
+        case_dir = Path(args[4])
+        passes = "candidate_1" in str(case_dir)
+        tool = ToolResult(
+            status="completed" if passes else "failed",
+            return_code=0 if passes else 1,
+            stdout="passed\n" if passes else "FAIL: mismatch\n",
+            stderr="" if passes else "kernel_tb.cpp:3: error: mismatch\n",
+            metrics={"can_compile": True, "can_pass_testbench": passes},
+            command="fake_csim",
+            duration_ms=1,
+        )
+        return (
+            {"can_compile": True, "can_pass_testbench": passes, "can_synthesize": False},
+            {"csim": tool.metrics, "csim_return_code": tool.return_code},
+            tool,
+        )
+
+    async def fake_synth_stage(*args, **kwargs):
+        seen_timeouts.append(kwargs.get("timeout_seconds"))
+        tool = ToolResult(
+            status="failed",
+            return_code=124,
+            stdout="",
+            stderr="timeout",
+            metrics={"timeout": True},
+            command="fake_synth",
+            duration_ms=1,
+        )
+        return False, {"synth": tool.metrics, "synth_return_code": 124}, tool
+
+    monkeypatch.setattr(runner, "build_model_client", lambda model: client)
+    monkeypatch.setattr(runner, "run_csim_stage", fake_csim_stage)
+    monkeypatch.setattr(runner, "run_synth_stage", fake_synth_stage)
+
+    result = asyncio.run(
+        runner.run_ccd_gen_v2_case(
+            "exp_test",
+            case,
+            tmp_path / "run",
+            ModelConfig(),
+            "mock",
+            None,
+            0,
+            6000,
+            2,
+            200,
+            candidate_count=2,
+            candidate_synth_timeout_sec=7.0,
+        )
+    )
+
+    assert seen_timeouts == [7.0]
+    assert result.metrics["stopped_reason"] == "candidate_repair_failed"
+
+
 def test_operator_memory_uses_token_report_cost():
     result = runner.CaseResult(
         experiment_id="exp_test",

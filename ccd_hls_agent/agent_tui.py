@@ -565,6 +565,8 @@ def run_benchmark(args: argparse.Namespace) -> Path:
         command.extend(["--memory-path", str(args.memory_path)])
     command.extend(["--candidate-count", str(getattr(args, "candidate_count", 1))])
     command.extend(["--candidate-policy", str(getattr(args, "candidate_policy", "repair_only"))])
+    if getattr(args, "candidate_synth_timeout_sec", None) is not None:
+        command.extend(["--candidate-synth-timeout-sec", str(args.candidate_synth_timeout_sec)])
     print("Running:", flush=True)
     print(" ".join(command), flush=True)
     print("", flush=True)
@@ -607,6 +609,7 @@ def run_contract_backend(args: argparse.Namespace) -> Path:
         memory_path=args.memory_path,
         candidate_count=args.candidate_count,
         candidate_policy=args.candidate_policy,
+        candidate_synth_timeout_sec=args.candidate_synth_timeout_sec,
         out_dir=out_dir,
     )
     run_dir = run_benchmark(runner_args)
@@ -1154,6 +1157,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--memory-path", type=Path, default=None)
     run.add_argument("--candidate-count", type=int, default=1)
     run.add_argument("--candidate-policy", default="repair_only", choices=["repair_only"])
+    run.add_argument("--candidate-synth-timeout-sec", type=float, default=180.0)
     run.add_argument("--out-dir", type=Path, default=None)
     run.add_argument("--no-view", action="store_true")
     run.add_argument("--snapshot", action="store_true", help="Print a summary after the run.")
@@ -1204,6 +1208,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_contract.add_argument("--memory-path", type=Path, default=None)
     run_contract.add_argument("--candidate-count", type=int, default=1)
     run_contract.add_argument("--candidate-policy", default="repair_only", choices=["repair_only"])
+    run_contract.add_argument("--candidate-synth-timeout-sec", type=float, default=180.0)
     run_contract.add_argument("--out-dir", type=Path, default=None)
     run_contract.add_argument("--snapshot", action="store_true")
 

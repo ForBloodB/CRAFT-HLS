@@ -514,9 +514,12 @@ async def run_synth_stage(
     case_dir: Path,
     build_dir: Path,
     top_function: str | None,
+    timeout_seconds: float | None = None,
 ) -> tuple[bool, dict[str, Any], ToolResult]:
     backend = build_hls_backend(backend_kind, backend_config(hls_eval_root, hls_part, hls_platform))
     config = backend_case_config(top_function, hls_part, hls_platform)
+    if timeout_seconds is not None:
+        config["timeout_seconds"] = timeout_seconds
     synth = await asyncio.to_thread(backend.run_synth, build_dir, source_files(case_dir, include_tb=False), config)
     can_synthesize = synth.return_code == 0
     metrics = {
@@ -552,6 +555,7 @@ async def run_ccd_gen_v2_case(
     memory_path: Path | None = None,
     candidate_count: int = 1,
     candidate_policy: str = "repair_only",
+    candidate_synth_timeout_sec: float | None = 180.0,
     hls_part: str | None = None,
     hls_platform: str | None = None,
 ) -> CaseResult:
@@ -658,6 +662,7 @@ async def run_ccd_gen_v2_case(
         "selected_actions": [],
         "candidate_count": candidate_count,
         "candidate_policy": candidate_policy,
+        "candidate_synth_timeout_sec": candidate_synth_timeout_sec,
         "candidate_evaluations": 0,
         "selected_candidate_score": None,
         "action_candidate_applied": 0,
@@ -995,10 +1000,15 @@ async def run_ccd_gen_v2_case(
                             candidate_design,
                             synth_build,
                             top_function,
+                            timeout_seconds=candidate_synth_timeout_sec,
                         )
                         tool_calls += 1
                         flags_candidate["can_synthesize"] = can_synth_candidate
                         candidate_metrics.update(synth_metrics)
+                        if synth_metrics.get("synth", {}).get("timeout") or synth_metrics.get("timeout"):
+                            message = "Candidate SYNTH timed out."
+                            flags_candidate["can_synthesize"] = False
+                            neg_penalty += 100.0
                         artifacts["synth_result"] = write_json_artifact(
                             candidate_root / "hls_result_synth.json",
                             {
@@ -2021,6 +2031,12 @@ async def main() -> None:
     parser.add_argument("--candidate-count", type=int, default=1, help="Number of repair candidates to evaluate when a repair stage is reached.")
     parser.add_argument("--candidate-policy", default="repair_only", choices=["repair_only"], help="Candidate generation policy. v1 only enables candidates during repair.")
     parser.add_argument(
+        "--candidate-synth-timeout-sec",
+        type=float,
+        default=180.0,
+        help="Timeout for each candidate SYNTH evaluation. Main SYNTH uses the backend default.",
+    )
+    parser.add_argument(
         "--early-stop-similarity-threshold",
         type=float,
         default=0.92,
@@ -2084,6 +2100,7 @@ async def main() -> None:
         "memory_path": str(args.memory_path) if args.memory_path else None,
         "candidate_count": args.candidate_count,
         "candidate_policy": args.candidate_policy,
+        "candidate_synth_timeout_sec": args.candidate_synth_timeout_sec,
         "model": public_model_dump(model),
     }
     write_text(out_dir / "manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
@@ -2137,6 +2154,7 @@ async def main() -> None:
                         args.memory_path,
                         args.candidate_count,
                         args.candidate_policy,
+                        args.candidate_synth_timeout_sec,
                         args.hls_part,
                         args.hls_platform,
                     )
