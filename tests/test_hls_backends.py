@@ -82,6 +82,27 @@ def test_vitis_config_prefers_platform_over_part(tmp_path: Path):
     assert "part=xczu9eg-ffvb1156-2-e" not in text
 
 
+def test_vitis_backend_infers_tool_env_from_platform(tmp_path: Path, monkeypatch):
+    install = tmp_path / "opt" / "2025.2" / "Vitis"
+    bin_dir = install / "bin"
+    platform = install / "base_platforms" / "xilinx_kv260" / "xilinx_kv260.xpfm"
+    bin_dir.mkdir(parents=True)
+    platform.parent.mkdir(parents=True)
+    platform.write_text("platform\n")
+    vitis_run = bin_dir / "vitis-run"
+    vpp = bin_dir / "v++"
+    vitis_run.write_text("#!/bin/sh\n")
+    vpp.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+
+    backend = VitisUnifiedHLSBackend(HLSBackendConfig(platform=str(platform)))
+
+    assert backend._vitis_run() == vitis_run.resolve()
+    assert backend._vpp() == vpp.resolve()
+    env_path = backend._tool_env()["PATH"].split(":")
+    assert str(bin_dir.resolve()) in env_path
+
+
 def test_vitis_csim_distinguishes_compile_from_testbench_failure(tmp_path: Path, monkeypatch):
     case = tmp_path / "case"
     case.mkdir()

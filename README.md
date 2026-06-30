@@ -103,6 +103,8 @@ source /tools/Xilinx/Vitis/2025.2/settings64.sh
 
 实际路径以本机安装为准。
 
+后台实验建议显式传入 `--hls-platform`。当平台文件位于 Vitis 安装目录下时，backend 会从 `.xpfm` 路径推断 `Vitis/bin` 并注入子进程 `PATH`，避免 `nohup`/非交互 shell 中出现 `vitis-run not found`。
+
 ## 4. 模型配置
 
 本项目不使用 `.env`。真实 key 只放在 ignored local config。

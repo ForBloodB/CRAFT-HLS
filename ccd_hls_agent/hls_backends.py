@@ -359,6 +359,16 @@ class VitisUnifiedHLSBackend:
     def __init__(self, config: HLSBackendConfig | None = None) -> None:
         self.config = config or HLSBackendConfig()
 
+    def _root_from_platform(self) -> Path | None:
+        platform = self.config.platform
+        if not platform:
+            return None
+        path = Path(str(platform)).expanduser()
+        for parent in [path, *path.parents]:
+            if parent.name == "Vitis" and (parent / "bin").is_dir():
+                return parent.resolve()
+        return None
+
     def _find_bin(self, name: str, configured: str | None = None) -> Path | None:
         if configured:
             p = Path(configured).expanduser()
@@ -367,8 +377,13 @@ class VitisUnifiedHLSBackend:
         root_candidates = []
         if self.config.vitis_root:
             root_candidates.append(Path(self.config.vitis_root))
+        platform_root = self._root_from_platform()
+        if platform_root is not None:
+            root_candidates.append(platform_root)
         if os.environ.get("XILINX_VITIS"):
             root_candidates.append(Path(os.environ["XILINX_VITIS"]))
+        root_candidates.append(Path("/opt/2025.2/Vitis"))
+        root_candidates.append(Path("/opt/Xilinx/Vitis"))
         root_candidates.append(Path("/data/tools/Xilinx/2025.2.1/Vitis"))
         for root in root_candidates:
             candidate = root.expanduser() / "bin" / name
@@ -376,6 +391,33 @@ class VitisUnifiedHLSBackend:
                 return candidate.resolve()
         found = shutil.which(name)
         return Path(found).resolve() if found else None
+
+    def _tool_env(self) -> dict[str, str]:
+        env = os.environ.copy()
+        roots: list[Path] = []
+        if self.config.vitis_root:
+            roots.append(Path(self.config.vitis_root).expanduser())
+        platform_root = self._root_from_platform()
+        if platform_root is not None:
+            roots.append(platform_root)
+        if os.environ.get("XILINX_VITIS"):
+            roots.append(Path(os.environ["XILINX_VITIS"]).expanduser())
+        for tool in [self._vitis_run(), self._vpp()]:
+            if tool is not None:
+                roots.append(tool.parent.parent)
+
+        bin_paths: list[str] = []
+        seen: set[str] = set()
+        for root in roots:
+            root = root.resolve()
+            bin_dir = root / "bin"
+            if bin_dir.is_dir() and str(bin_dir) not in seen:
+                bin_paths.append(str(bin_dir))
+                seen.add(str(bin_dir))
+                env.setdefault("XILINX_VITIS", str(root))
+        current_path = env.get("PATH", "")
+        env["PATH"] = os.pathsep.join([*bin_paths, current_path]) if bin_paths else current_path
+        return env
 
     def _vpp(self) -> Path | None:
         return self._find_bin("v++", self.config.vpp_path)
@@ -446,6 +488,7 @@ class VitisUnifiedHLSBackend:
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                env=self._tool_env(),
                 start_new_session=True,
             )
             try:
